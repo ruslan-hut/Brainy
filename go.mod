@@ -1,4 +1,4 @@
-module AslamistBot
+module Brainy
 
 go 1.20
 

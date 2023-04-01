@@ -1,7 +1,7 @@
 package main
 
 import (
-	"AslamistBot/core"
+	"Brainy/core"
 	"encoding/json"
 	"fmt"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
@@ -55,6 +55,7 @@ func main() {
 		if update.Message == nil {
 			continue
 		}
+		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 
 		if strings.HasPrefix(update.Message.Text, "/ask ") {
 			// Send the text after the "/ask " command to the ChatGPT API
