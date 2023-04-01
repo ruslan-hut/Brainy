@@ -16,11 +16,30 @@ To use this Chatbot, you'll need the following:
 To install and run the Chatbot, follow these steps:
 
 1. Clone this repository to your local machine.
-2. Set the following environment variables:
+2. Install the required dependencies using `go get`
 
-> TELEGRAM_BOT_TOKEN='your Telegram bot token'
+> go get github.com/go-telegram-bot-api/telegram-bot-api
+
+3. Set the following environment variables in `config.yml`:
+
+> telegram_api_key: your-Telegram-bot-token
 >
-> OPENAI_API_KEY='your OpenAI API key'
+> openai_api_key: your-OpenAI-API-key
+
+4. Start the Chatbot by running the following command:
+
+> go run main.go
+
+## Usage
+
+Start new chat with the bot by sending a message to it. The bot will respond with a generated message. You can also add the bot to a group chat and it will respond to messages in the group.
+Bot recognizes commands in the following format:
+
+> /ask _question_
+> 
+> /cat _translate word from Catalan to English_
+> 
+> /cas _translate word from Spanish to English_
 
 ## License
 
