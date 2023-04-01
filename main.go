@@ -8,8 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 )
+
+const MaxMessageLength = 1000
 
 type ChatCompletion struct {
 	ID      string `json:"id"`
@@ -53,6 +56,17 @@ func main() {
 	// Define a command handler
 	for update := range updates {
 		if update.Message == nil {
+			continue
+		}
+
+		if len(update.Message.Text) > MaxMessageLength {
+			// Reject the message if it exceeds the maximum length
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Your message is too long. Please keep it under "+strconv.Itoa(MaxMessageLength)+" characters.")
+			_, err := bot.Send(msg)
+			if err != nil {
+				log.Printf("error sending message: %v", err)
+			}
+			log.Printf("[%s] Input rejected", update.Message.From.UserName)
 			continue
 		}
 		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
