@@ -94,7 +94,11 @@ func (c *ChatGPT) composePrompt(question string) string {
 		return p + word
 	}
 
-	return "Say random phrase about misunderstandings, miscommunication"
+	if strings.HasPrefix(question, "/hello") {
+		return "Answer in Ukrainian: Say random fact about people communication in different languages."
+	}
+
+	return "Answer in Ukrainian: Say random phrase about misunderstandings, miscommunication or bad management."
 }
 
 func LanguageTranslatePrompt(language string) string {
