@@ -93,7 +93,7 @@ func main() {
 			//p = p + "- for verbs add: conjugation in present, past and future "
 			//p = p + ". Here is the word to translate: "
 
-			p := "Act as a Catalan-English dictionary. Give response like an Oxford Dictionary article. Add the following information: "
+			p := "Act as a Catalan-English dictionary. Give response like an Dictionary article. Add the following information: "
 			p = p + "[ transcription ] "
 			p = p + "- gender, empty if not applicable "
 			p = p + "- grammar form, empty if not applicable "
@@ -113,7 +113,7 @@ func main() {
 			}
 		}
 		if strings.HasPrefix(update.Message.Text, "/cas ") {
-			p := "Act as a Catalan-English dictionary. Give response like an Oxford Dictionary article. Add the following information: "
+			p := "Act as a Spanish-English dictionary. Give response like an Dictionary article. Add the following information: "
 			p = p + "[ transcription ] "
 			p = p + "- gender, empty if not applicable "
 			p = p + "- grammar form, empty if not applicable "
