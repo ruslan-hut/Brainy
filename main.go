@@ -84,15 +84,6 @@ func main() {
 			}
 		}
 		if strings.HasPrefix(update.Message.Text, "/cat ") {
-			//p := "Act as a Catalan-English dictionary. Give response in a following pattern: "
-			//p = p + "[ transcription ] "
-			//p = p + "- gender, empty if not applicable "
-			//p = p + "- grammar form, empty if not applicable "
-			//p = p + "- translation "
-			//p = p + "- examples of use "
-			//p = p + "- for verbs add: conjugation in present, past and future "
-			//p = p + ". Here is the word to translate: "
-
 			p := "Act as a Catalan-English dictionary. Give response like an Dictionary article. Add the following information: "
 			p = p + "[ transcription ] "
 			p = p + "- gender, empty if not applicable "
