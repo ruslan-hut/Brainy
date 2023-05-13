@@ -1,5 +1,5 @@
 package core
 
 type ChatService interface {
-	GetResponse(prompt string) (string, error)
+	GetResponse(userId int64, prompt string) (string, error)
 }

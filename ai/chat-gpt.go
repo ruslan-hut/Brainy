@@ -2,6 +2,7 @@ package ai
 
 import (
 	"Brainy/core"
+	"Brainy/holder"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,17 +12,21 @@ import (
 )
 
 type ChatGPT struct {
-	conf *core.Config
+	conf           *core.Config
+	contextManager *holder.ContextManager
 }
 
 func NewChat(conf *core.Config) *ChatGPT {
-	return &ChatGPT{conf: conf}
+	return &ChatGPT{
+		conf:           conf,
+		contextManager: holder.NewContextManager(),
+	}
 }
 
-func (c *ChatGPT) GetResponse(question string) (string, error) {
+func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	client := &http.Client{}
 
-	prompt := c.composePrompt(question)
+	prompt := c.composePrompt(userId, question)
 
 	request := NewRequest(prompt)
 	jsonBytes, err := json.Marshal(request)
@@ -71,11 +76,24 @@ func (c *ChatGPT) GetResponse(question string) (string, error) {
 	}
 	response := chatCompletion.Choices[0].Message.Content
 
+	// add bot message to context
+	msg := holder.Message{
+		Text:   response,
+		IsUser: false,
+	}
+	c.contextManager.UpdateUserContext(userId, msg)
+
+	logText := response
+	if len(logText) > 50 {
+		logText = logText[:50] + "..."
+	}
+	log.Printf("ChatGPT: response: %s", logText)
+
 	return response, nil
 }
 
 // compose prompt for openai
-func (c *ChatGPT) composePrompt(question string) string {
+func (c *ChatGPT) composePrompt(userId int64, question string) string {
 
 	if strings.HasPrefix(question, "/ask ") {
 		// Send the text after the "/ask " command to the ChatGPT API
@@ -98,7 +116,24 @@ func (c *ChatGPT) composePrompt(question string) string {
 		return "Answer in Ukrainian: Say random fact about people communication in different languages."
 	}
 
-	return "Answer in Ukrainian: Say random phrase about misunderstandings, miscommunication or bad management."
+	if strings.HasPrefix(question, "/clear") {
+		c.contextManager.ClearUserContext(userId)
+		return "Let's talk."
+	}
+
+	// add user message to context
+	msg := holder.Message{
+		Text:   question,
+		IsUser: true,
+	}
+	c.contextManager.UpdateUserContext(userId, msg)
+
+	t := c.getContext(userId)
+	if t != "" {
+		question = t + "\nMy next question is:\n" + question
+	}
+
+	return question
 }
 
 func LanguageTranslatePrompt(language string) string {
@@ -111,4 +146,21 @@ func LanguageTranslatePrompt(language string) string {
 	p = p + "- for verbs add: conjugation in present, past and future. "
 	p = p + "Here is the word to translate: "
 	return p
+}
+
+func (c *ChatGPT) getContext(userId int64) string {
+	t := ""
+	dialogContext := c.contextManager.GetUserContext(userId)
+	if dialogContext != nil {
+		log.Printf("context for user %d has %d tokens", userId, dialogContext.Tokens)
+		t = "Previous messages of you as Assistant and me as User: "
+		for _, message := range dialogContext.Messages {
+			person := "Assistant"
+			if message.IsUser {
+				person = "User"
+			}
+			t += fmt.Sprintf("\n%s: %s", person, message.Text)
+		}
+	}
+	return t
 }
