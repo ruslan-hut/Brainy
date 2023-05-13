@@ -2,7 +2,6 @@ package bot
 
 import (
 	"Brainy/core"
-	"Brainy/holder"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"log"
 	"strings"
@@ -12,18 +11,16 @@ const MaxMessageLength = 1000
 const errorResponse = "Sorry, I'm not feeling well today. Please try again later."
 
 type TgBot struct {
-	conf           *core.Config
-	api            *tgbotapi.BotAPI
-	chat           core.ChatService
-	botUsername    string
-	contextManager *holder.ContextManager
+	conf        *core.Config
+	api         *tgbotapi.BotAPI
+	chat        core.ChatService
+	botUsername string
 }
 
 func NewTgBot(conf *core.Config) (*TgBot, error) {
 	tgBot := &TgBot{
-		conf:           conf,
-		contextManager: holder.NewContextManager(),
-		botUsername:    conf.Username,
+		conf:        conf,
+		botUsername: conf.Username,
 	}
 
 	api, err := tgbotapi.NewBotAPI(conf.TelegramApiKey)
@@ -64,17 +61,22 @@ func (t *TgBot) Start() {
 		if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
 			continue
 		}
+		if incoming.IsCommand() {
+			if incoming.Command() == "help" {
+				text := "You can use the following commands:\n"
+				text += "/help - show this help\n"
+				text += "/hello - bot says random fact\n"
+				text += "/topic - set a subject of conversation\n"
+				text += "/ask - ask something or just reply on previous bot message\n"
+				text += "/clear - clear bot memory to begin new topic\n"
+				t.plainResponse(chat.ID, text)
+				continue
+			}
+			if incoming.Command() == "ask" {
+				question = strings.TrimPrefix(question, "/ask")
+			}
+		}
 
-		// Reject the message if it exceeds the maximum length
-		//if len(incoming.Text) > MaxMessageLength {
-		//	msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Your message is too long. Please keep it under "+strconv.Itoa(MaxMessageLength)+" characters.")
-		//	_, err := t.api.Send(msg)
-		//	if err != nil {
-		//		log.Printf("error sending message: %v", err)
-		//	}
-		//	log.Printf("[%s] Input rejected", update.Message.From.UserName)
-		//	continue
-		//}
 		logText := question
 		if len(logText) > 50 {
 			logText = logText[:50] + "..."
@@ -93,10 +95,13 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 		log.Printf("error getting response: %v", err)
 		response = errorResponse
 	}
+	t.plainResponse(chatId, response)
+}
 
+func (t *TgBot) plainResponse(chatId int64, text string) {
 	// Send the response back to the user
-	msg := tgbotapi.NewMessage(chatId, response)
-	_, err = t.api.Send(msg)
+	msg := tgbotapi.NewMessage(chatId, text)
+	_, err := t.api.Send(msg)
 	if err != nil {
 		log.Printf("error sending message: %v", err)
 	}

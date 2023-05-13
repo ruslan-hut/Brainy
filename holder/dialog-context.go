@@ -17,6 +17,7 @@ type Message struct {
 
 type DialogContext struct {
 	UserId    int64
+	Topic     string
 	Messages  []Message
 	Tokens    int
 	UpdatedAt time.Time
@@ -68,6 +69,23 @@ func (cm *ContextManager) UpdateUserContext(userId int64, message Message) {
 			UserId:    userId,
 			Messages:  []Message{message},
 			Tokens:    message.Tokens,
+			UpdatedAt: time.Now(),
+		}
+	}
+}
+
+func (cm *ContextManager) SetTopic(userId int64, topic string) {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+
+	if context, ok := cm.Contexts[userId]; ok {
+		context.Topic = topic
+	} else {
+		cm.Contexts[userId] = &DialogContext{
+			UserId:    userId,
+			Topic:     topic,
+			Messages:  []Message{},
+			Tokens:    0,
 			UpdatedAt: time.Now(),
 		}
 	}

@@ -113,12 +113,18 @@ func (c *ChatGPT) composePrompt(userId int64, question string) string {
 	}
 
 	if strings.HasPrefix(question, "/hello") {
-		return "Answer in Ukrainian: Say random fact about people communication in different languages."
+		return "Answer in Ukrainian: Say one random fact from science."
 	}
 
 	if strings.HasPrefix(question, "/clear") {
 		c.contextManager.ClearUserContext(userId)
 		return "Let's talk."
+	}
+
+	if strings.HasPrefix(question, "/topic") {
+		topic := strings.TrimPrefix(question, "/topic ")
+		c.contextManager.SetTopic(userId, topic)
+		return "Let's talk about " + topic + "."
 	}
 
 	// add user message to context
@@ -153,7 +159,10 @@ func (c *ChatGPT) getContext(userId int64) string {
 	dialogContext := c.contextManager.GetUserContext(userId)
 	if dialogContext != nil {
 		log.Printf("context for user %d has %d tokens", userId, dialogContext.Tokens)
-		t = "Previous messages of you as Assistant and me as User: "
+		if dialogContext.Topic != "" {
+			t = "Subject: " + dialogContext.Topic
+		}
+		t += "\nPrevious messages of you as Assistant and me as User: "
 		for _, message := range dialogContext.Messages {
 			person := "Assistant"
 			if message.IsUser {
