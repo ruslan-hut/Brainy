@@ -32,14 +32,29 @@ To install and run the Chatbot, follow these steps:
 
 ## Usage
 
-Start new chat with the bot by sending a message to it. The bot will respond with a generated message. You can also add the bot to a group chat and it will respond to messages in the group.
+Start new chat with the bot by sending a message to it. The bot will respond with a generated message. You can also add the bot to a group chat and it will respond to messages in the group. 
+For every user or chat ID bot stores some context, size of the context is defined by `maxTokens` parameter in a `ContextManager`.
 Bot recognizes commands in the following format:
 
+ask regular question to the bot, you don`t need to use this command in a private chat, just ask a question
 > /ask _question_
-> 
+
+set a topic or subject for the bot to talk about, this will be added to the beginning of the generated prompts 
+> /topic _some subject_
+
+clear the cashed context and topic
+> /clear
+
+some experimental features to use ChatGPT as a word translator
 > /cat _translate word from Catalan to English_
 > 
 > /cas _translate word from Spanish to English_
+
+bot will respond with a random fact
+> /hello
+
+bot will respond with a help message, describing the commands
+> /help
 
 ## License
 
