@@ -4,11 +4,17 @@ import (
 	"Brainy/ai"
 	"Brainy/bot"
 	"Brainy/core"
+	"flag"
 	"log"
 )
 
 func main() {
-	conf, err := core.GetConfig()
+
+	configPath := flag.String("conf", "config.yml", "path to config file")
+	flag.Parse()
+
+	log.Println("using config file: " + *configPath)
+	conf, err := core.GetConfig(*configPath)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -23,11 +23,11 @@ type Config struct {
 var instance *Config
 var once sync.Once
 
-func GetConfig() (*Config, error) {
+func GetConfig(path string) (*Config, error) {
 	var err error
 	once.Do(func() {
 		instance = &Config{}
-		if err = cleanenv.ReadConfig("config.yml", instance); err != nil {
+		if err = cleanenv.ReadConfig(path, instance); err != nil {
 			desc, _ := cleanenv.GetDescription(instance, nil)
 			err = fmt.Errorf("config: %s; %s", err, desc)
 			instance = nil
