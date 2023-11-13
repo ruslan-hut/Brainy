@@ -13,7 +13,7 @@ type Message struct {
 
 func NewRequest(content string) *GPTRequest {
 	return &GPTRequest{
-		Model:       "gpt-3.5-turbo",
+		Model:       "gpt-4",
 		Messages:    []Message{{Role: "user", Content: content}},
 		Temperature: 0.7,
 	}
