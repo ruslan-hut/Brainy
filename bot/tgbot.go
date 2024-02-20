@@ -119,10 +119,8 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 		for {
 			select {
 			case <-ticker.C:
-				log.Printf("sending chat action...")
 				t.sendChatAction(chatId, "typing")
 			case <-stopTicker:
-				log.Printf("stopping chat action")
 				return
 			}
 		}
@@ -136,7 +134,6 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 	reply := <-replyReady
 	stopTicker <- true
 
-	log.Printf("sending response")
 	t.plainResponse(chatId, reply)
 }
 
