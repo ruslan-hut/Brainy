@@ -88,18 +88,12 @@ func (t *TgBot) Start() {
 	}
 }
 
-// every 5 seconds send chat action
 func (t *TgBot) sendChatAction(chatId int64, action string) {
-	ticker := time.NewTicker(5 * time.Second)
-
-	for range ticker.C {
-		msg := tgbotapi.NewChatAction(chatId, action)
-		_, err := t.api.Send(msg)
-		if err != nil {
-			log.Printf("error sending message: %v", err)
-		}
+	msg := tgbotapi.NewChatAction(chatId, action)
+	_, err := t.api.Send(msg)
+	if err != nil {
+		log.Printf("error sending message: %v", err)
 	}
-
 }
 
 func (t *TgBot) composeReply(chatId int64, request string) string {
@@ -119,7 +113,7 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 	t.sendChatAction(chatId, "typing")
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 
 		for {
