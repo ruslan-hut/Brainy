@@ -5,9 +5,9 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"log"
 	"strings"
+	"time"
 )
 
-const MaxMessageLength = 1000
 const errorResponse = "Sorry, I'm not feeling well today. Please try again later."
 
 type TgBot struct {
@@ -88,14 +88,57 @@ func (t *TgBot) Start() {
 	}
 }
 
-func (t *TgBot) SendResponse(chatId int64, request string) {
+// every 5 seconds send chat action
+func (t *TgBot) sendChatAction(chatId int64, action string) {
+	ticker := time.NewTicker(5 * time.Second)
+
+	for range ticker.C {
+		msg := tgbotapi.NewChatAction(chatId, action)
+		_, err := t.api.Send(msg)
+		if err != nil {
+			log.Printf("error sending message: %v", err)
+		}
+	}
+
+}
+
+func (t *TgBot) composeReply(chatId int64, request string) string {
 	// Get the response from the chat service
 	response, err := t.chat.GetResponse(chatId, request)
 	if err != nil {
 		log.Printf("error getting response: %v", err)
 		response = errorResponse
 	}
-	t.plainResponse(chatId, response)
+	return response
+}
+
+func (t *TgBot) SendResponse(chatId int64, request string) {
+	stopTicker := make(chan bool)
+	replyReady := make(chan string)
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				t.sendChatAction(chatId, "typing")
+			case <-stopTicker:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		reply := t.composeReply(chatId, request)
+		replyReady <- reply
+	}()
+
+	reply := <-replyReady
+	stopTicker <- true
+
+	t.plainResponse(chatId, reply)
 }
 
 func (t *TgBot) plainResponse(chatId int64, text string) {
