@@ -18,4 +18,12 @@ type ChatCompletion struct {
 		FinishReason string `json:"finish_reason"`
 		Index        int    `json:"index"`
 	} `json:"choices"`
+	Error *Error `json:"error"`
+}
+
+type Error struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Param   string `json:"param"`
 }
