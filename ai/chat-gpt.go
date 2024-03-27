@@ -66,6 +66,10 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading response body: %v", err)
 	}
+	c.log.With(
+		slog.Int64("user", userId),
+		slog.String("body", string(body)),
+	).Debug("response body")
 
 	// Parse the response JSON to get the generated text
 	// Here you'll need to adjust the code to parse the JSON response from ChatGPT and extract the generated text
