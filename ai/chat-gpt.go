@@ -41,7 +41,7 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	// Create a new request with the ChatGPT API URL
 	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", requestBody)
 	if err != nil {
-		return "", fmt.Errorf("error making request: %v", err)
+		return "", fmt.Errorf("making request: %v", err)
 	}
 
 	// Add the Authorization header with your ChatGPT API key
@@ -51,7 +51,7 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	// Send the request and get the response
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error getting response: %v", err)
+		return "", fmt.Errorf("getting response: %v", err)
 	}
 
 	// Read the response body
@@ -64,7 +64,7 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("error reading response body: %v", err)
+		return "", fmt.Errorf("reading response body: %v", err)
 	}
 
 	// Parse the response JSON to get the generated text
@@ -72,10 +72,15 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	var chatCompletion ChatCompletion
 	err = json.Unmarshal(body, &chatCompletion)
 	if err != nil {
-		return "", fmt.Errorf("error decoding response: %v", err)
+		return "", fmt.Errorf("decoding response: %v", err)
 	}
+	c.log.With(
+		slog.Int64("user", userId),
+		slog.String("model", chatCompletion.Model),
+		slog.Int("choices", len(chatCompletion.Choices)),
+	).Info("chat completion")
 	if len(chatCompletion.Choices) == 0 {
-		return "", fmt.Errorf("error: no response on prompt: %s", question)
+		return "", fmt.Errorf("chat completion: empty choices")
 	}
 	response := chatCompletion.Choices[0].Message.Content
 
