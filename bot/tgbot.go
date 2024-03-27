@@ -2,8 +2,10 @@ package bot
 
 import (
 	"Brainy/core"
+	"Brainy/lib/sl"
+	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -12,20 +14,22 @@ const errorResponse = "Sorry, I'm not feeling well today. Please try again later
 
 type TgBot struct {
 	conf        *core.Config
+	log         *slog.Logger
 	api         *tgbotapi.BotAPI
 	chat        core.ChatService
 	botUsername string
 }
 
-func NewTgBot(conf *core.Config) (*TgBot, error) {
+func NewTgBot(conf *core.Config, log *slog.Logger) (*TgBot, error) {
 	tgBot := &TgBot{
 		conf:        conf,
+		log:         log.With(sl.Module("tgbot")),
 		botUsername: conf.Username,
 	}
 
 	api, err := tgbotapi.NewBotAPI(conf.TelegramApiKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating api instance: %v", err)
 	}
 	tgBot.api = api
 
@@ -37,7 +41,7 @@ func (t *TgBot) SetChat(chat core.ChatService) {
 	t.chat = chat
 }
 
-func (t *TgBot) Start() {
+func (t *TgBot) Start() error {
 	// Set up an update configuration
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -45,7 +49,7 @@ func (t *TgBot) Start() {
 	// Start listening for updates
 	updates, err := t.api.GetUpdatesChan(u)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("getting updates channel: %v", err)
 	}
 
 	// Define a command handler
@@ -81,18 +85,27 @@ func (t *TgBot) Start() {
 		if len(logText) > 50 {
 			logText = logText[:50] + "..."
 		}
-		log.Printf("[%s] %s", incoming.From.UserName, logText)
+		t.log.With(
+			slog.String("user", chat.UserName),
+			slog.Int64("id", chat.ID),
+			slog.String("text", logText),
+		).Info("incoming message")
 
 		go t.SendResponse(chat.ID, question)
 
 	}
+
+	return nil
 }
 
 func (t *TgBot) sendChatAction(chatId int64, action string) {
 	msg := tgbotapi.NewChatAction(chatId, action)
 	_, err := t.api.Send(msg)
 	if err != nil {
-		log.Printf("error sending message: %v", err)
+		t.log.With(
+			slog.String("action", action),
+			slog.Int64("id", chatId),
+		).Error("sending chat action", sl.Err(err))
 	}
 }
 
@@ -100,7 +113,9 @@ func (t *TgBot) composeReply(chatId int64, request string) string {
 	// Get the response from the chat service
 	response, err := t.chat.GetResponse(chatId, request)
 	if err != nil {
-		log.Printf("error getting response: %v", err)
+		t.log.With(
+			slog.Int64("id", chatId),
+		).Error("composing reply", sl.Err(err))
 		response = errorResponse
 	}
 	return response
@@ -142,7 +157,9 @@ func (t *TgBot) plainResponse(chatId int64, text string) {
 	msg := tgbotapi.NewMessage(chatId, text)
 	_, err := t.api.Send(msg)
 	if err != nil {
-		log.Printf("error sending message: %v", err)
+		t.log.With(
+			slog.Int64("id", chatId),
+		).Error("sending message", sl.Err(err))
 	}
 }
 

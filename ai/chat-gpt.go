@@ -3,22 +3,25 @@ package ai
 import (
 	"Brainy/core"
 	"Brainy/holder"
+	"Brainy/lib/sl"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 )
 
 type ChatGPT struct {
 	conf           *core.Config
+	log            *slog.Logger
 	contextManager *holder.ContextManager
 }
 
-func NewChat(conf *core.Config) *ChatGPT {
+func NewChat(conf *core.Config, log *slog.Logger) *ChatGPT {
 	return &ChatGPT{
 		conf:           conf,
+		log:            log.With(sl.Module("chat-gpt")),
 		contextManager: holder.NewContextManager(),
 	}
 }
@@ -53,9 +56,9 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 
 	// Read the response body
 	defer func(Body io.ReadCloser) {
-		err := Body.Close()
+		err = Body.Close()
 		if err != nil {
-			log.Println("error closing body: ", err)
+			c.log.Error("closing response body", sl.Err(err))
 		}
 	}(resp.Body)
 
@@ -87,7 +90,10 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	if len(logText) > 50 {
 		logText = logText[:50] + "..."
 	}
-	log.Printf("ChatGPT: response: %s", logText)
+	c.log.With(
+		slog.Int64("user", userId),
+		slog.String("text", logText),
+	).Info("outgoing message")
 
 	return response, nil
 }
@@ -158,7 +164,10 @@ func (c *ChatGPT) getContext(userId int64) string {
 	t := ""
 	dialogContext := c.contextManager.GetUserContext(userId)
 	if dialogContext != nil {
-		log.Printf("context for user %d has %d tokens", userId, dialogContext.Tokens)
+		c.log.With(
+			slog.Int64("user", userId),
+			slog.Int("tokens", dialogContext.Tokens),
+		).Info("user context")
 		if dialogContext.Topic != "" {
 			t = "Subject: " + dialogContext.Topic
 		}

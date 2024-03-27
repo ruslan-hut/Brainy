@@ -3,10 +3,12 @@ package core
 import (
 	"fmt"
 	"github.com/ilyakaznacheev/cleanenv"
+	"log"
 	"sync"
 )
 
 type Config struct {
+	Env            string `yaml:"env" env-default:"local"`
 	TelegramApiKey string `yaml:"telegram_api_key" env-default:""`
 	OpenAIApiKey   string `yaml:"openai_api_key" env-default:""`
 	Username       string `yaml:"username" env-default:""`
@@ -23,7 +25,7 @@ type Config struct {
 var instance *Config
 var once sync.Once
 
-func GetConfig(path string) (*Config, error) {
+func MustLoad(path string) *Config {
 	var err error
 	once.Do(func() {
 		instance = &Config{}
@@ -31,7 +33,8 @@ func GetConfig(path string) (*Config, error) {
 			desc, _ := cleanenv.GetDescription(instance, nil)
 			err = fmt.Errorf("config: %s; %s", err, desc)
 			instance = nil
+			log.Fatal(err)
 		}
 	})
-	return instance, err
+	return instance
 }
