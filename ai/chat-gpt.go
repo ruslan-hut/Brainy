@@ -78,13 +78,15 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decoding response: %v", err)
 	}
-	if chatCompletion.Error.Code != "" {
-		c.log.With(
-			slog.Int64("user", userId),
-			slog.String("code", chatCompletion.Error.Code),
-			slog.String("message", chatCompletion.Error.Message),
-		).Error("chat completion error")
-		return "", fmt.Errorf("chat completion: %s", chatCompletion.Error.Code)
+	if chatCompletion.Error != nil {
+		if chatCompletion.Error.Code != "" {
+			c.log.With(
+				slog.Int64("user", userId),
+				slog.String("code", chatCompletion.Error.Code),
+				slog.String("message", chatCompletion.Error.Message),
+			).Error("chat completion error")
+			return "", fmt.Errorf("chat completion: %s", chatCompletion.Error.Code)
+		}
 	}
 	if len(chatCompletion.Choices) == 0 {
 		return "", fmt.Errorf("chat completion: empty choices")
