@@ -1,11 +1,13 @@
 ---
 
+env: local
 telegram_api_key: YOUR_TELEGRAM_API_KEY
 openai_api_key: YOUR_OPENAI_API_KEY
+username: BOT_USERNAME
 mongo:
   enabled: false
   host: 127.0.0.1
   port: 27017
   user: admin
   password: pass
-  database: evsys
+  database: bot

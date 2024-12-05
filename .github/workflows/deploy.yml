@@ -1,0 +1,73 @@
+name: Deploy to Digital Ocean Droplet
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    name: Build and Deploy
+    runs-on: ubuntu-20.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare configuration file
+        run: |
+          sed -i 's|${TELEGRAM_API_KEY}|'"$TELEGRAM_API_KEY"'|g' brainy.yml
+          sed -i 's|${OPENAI_API_KEY}|'"$OPENAI_API_KEY"'|g' brainy.yml
+          sed -i 's|${BOT_USERNAME}|'"$BOT_USERNAME"'|g' brainy.yml
+          sed -i 's|${MONGO_HOST}|'"$MONGO_HOST"'|g' brainy.yml
+          sed -i 's|${MONGO_PORT}|'"$MONGO_PORT"'|g' brainy.yml
+          sed -i 's|${MONGO_USER}|'"$MONGO_USER"'|g' brainy.yml
+          sed -i 's|${MONGO_PASSWORD}|'"$MONGO_PASSWORD"'|g' brainy.yml
+          sed -i 's|${MONGO_DATABASE}|'"$MONGO_DATABASE"'|g' brainy.yml
+        env:
+          TELEGRAM_API_KEY: ${{ secrets.TELEGRAM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+          MONGO_HOST: ${{ vars.MONGO_HOST }}
+          MONGO_PORT: ${{ vars.MONGO_PORT }}
+          MONGO_USER: ${{ secrets.MONGO_USER }}
+          MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
+          MONGO_DATABASE: ${{ secrets.MONGO_DATABASE }}
+
+      - name: Copy Configuration to Server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "brainy.yml"
+          target: "/etc/conf/"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Go application
+        run: |
+          go build -v -o brainy
+
+      - name: Deploy to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "brainy"
+          target: "/usr/local/bin/"
+
+      - name: Restart Application
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            systemctl restart brainy.service 

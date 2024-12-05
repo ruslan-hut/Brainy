@@ -1,0 +1,13 @@
+---
+
+env: dev
+telegram_api_key: ${TELEGRAM_API_KEY}
+openai_api_key: ${OPENAI_API_KEY}
+username: ${BOT_USERNAME}
+mongo:
+  enabled: false
+  host: ${MONGO_HOST}
+  port: ${MONGO_PORT}
+  user: ${MONGO_USER}
+  password: ${MONGO_PASSWORD}
+  database: ${MONGO_DATABASE}
