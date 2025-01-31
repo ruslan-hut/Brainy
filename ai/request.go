@@ -1,9 +1,9 @@
 package ai
 
 type GPTRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	//Temperature float64   `json:"temperature"`
 }
 
 type Message struct {
@@ -13,8 +13,8 @@ type Message struct {
 
 func NewRequest(content string) *GPTRequest {
 	return &GPTRequest{
-		Model:       "o3-mini", //"gpt-4o-mini",
-		Messages:    []Message{{Role: "user", Content: content}},
-		Temperature: 0.7,
+		Model:    "o3-mini", //"gpt-4o-mini",
+		Messages: []Message{{Role: "user", Content: content}},
+		//Temperature: 0.7,
 	}
 }
