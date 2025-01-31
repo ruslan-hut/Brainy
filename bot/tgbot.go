@@ -153,13 +153,28 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 }
 
 func (t *TgBot) plainResponse(chatId int64, text string) {
+
+	// ChatGPT uses ** for bold text, so we need to replace it
+	text = strings.ReplaceAll(text, "**", "*")
+	text = strings.ReplaceAll(text, "![", "[")
+
 	// Send the response back to the user
-	msg := tgbotapi.NewMessage(chatId, text)
+	sanitized := sanitize(text)
+
+	msg := tgbotapi.NewMessage(chatId, sanitized)
+	msg.ParseMode = "MarkdownV2"
 	_, err := t.api.Send(msg)
 	if err != nil {
 		t.log.With(
 			slog.Int64("id", chatId),
-		).Error("sending message", sl.Err(err))
+		).Warn("sending message", sl.Err(err))
+		safeMsg := tgbotapi.NewMessage(chatId, text)
+		_, err = t.api.Send(safeMsg)
+		if err != nil {
+			t.log.With(
+				slog.Int64("id", chatId),
+			).Error("sending safe message", sl.Err(err))
+		}
 	}
 }
 
@@ -177,4 +192,24 @@ func (t *TgBot) isReplyToBot(message *tgbotapi.Message) bool {
 		return message.ReplyToMessage.From.UserName == t.botUsername
 	}
 	return false
+}
+
+func sanitize(input string) string {
+	// Define a list of reserved characters that need to be escaped
+	reservedChars := "\\`_{}#+-.!|"
+
+	// Loop through each character in the input string
+	sanitized := ""
+	for _, char := range input {
+		// Check if the character is reserved
+		if strings.ContainsRune(reservedChars, char) {
+			// Escape the character with a backslash
+			sanitized += "\\" + string(char)
+		} else {
+			// Add the character to the sanitized string
+			sanitized += string(char)
+		}
+	}
+
+	return sanitized
 }
