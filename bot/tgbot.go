@@ -80,6 +80,9 @@ func (t *TgBot) Start() error {
 				question = strings.TrimPrefix(question, "/ask")
 			}
 		}
+		if t.isMentioned(incoming.Text) {
+			question = strings.ReplaceAll(question, "@"+t.botUsername, "")
+		}
 
 		logText := question
 		if len(logText) > 50 {
