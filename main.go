@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -36,9 +37,12 @@ func main() {
 	// Initialize storage based on config
 	var store storage.ContextStorage
 	if conf.Mongo.Enabled {
-		mongoURI := fmt.Sprintf("mongodb://%s:%s@%s:%s",
-			conf.Mongo.User, conf.Mongo.Password,
-			conf.Mongo.Host, conf.Mongo.Port)
+		// URL-encode password to handle special characters, add authSource for authentication
+		mongoURI := fmt.Sprintf("mongodb://%s:%s@%s:%s/%s?authSource=%s",
+			url.QueryEscape(conf.Mongo.User),
+			url.QueryEscape(conf.Mongo.Password),
+			conf.Mongo.Host, conf.Mongo.Port,
+			conf.Mongo.Database, conf.Mongo.Database)
 		var err error
 		store, err = storage.NewMongoStorage(mongoURI, conf.Mongo.Database, log)
 		if err != nil {
