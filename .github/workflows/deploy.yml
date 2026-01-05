@@ -28,8 +28,8 @@ jobs:
           TELEGRAM_API_KEY: ${{ secrets.TELEGRAM_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
-          MONGO_HOST: ${{ vars.MONGO_HOST }}
-          MONGO_PORT: ${{ vars.MONGO_PORT }}
+          MONGO_HOST: ${{ secrets.MONGO_HOST }}
+          MONGO_PORT: ${{ secrets.MONGO_PORT }}
           MONGO_USER: ${{ secrets.MONGO_USER }}
           MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
           MONGO_DATABASE: ${{ secrets.MONGO_DATABASE }}
