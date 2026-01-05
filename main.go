@@ -45,7 +45,8 @@ func main() {
 			log.With(
 				slog.String("db", conf.Mongo.Database),
 				slog.String("user", conf.Mongo.User),
-			).Error("connecting to MongoDB, falling back to memory", sl.Err(err))
+				slog.String("host", conf.Mongo.Host),
+			).Error("falling back to memory", sl.Err(err))
 			store = storage.NewMemoryStorage()
 		} else {
 			log.Info("using MongoDB storage")
