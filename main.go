@@ -42,7 +42,10 @@ func main() {
 		var err error
 		store, err = storage.NewMongoStorage(mongoURI, conf.Mongo.Database, log)
 		if err != nil {
-			log.Error("connecting to MongoDB, falling back to memory", sl.Err(err))
+			log.With(
+				slog.String("db", conf.Mongo.Database),
+				slog.String("user", conf.Mongo.User),
+			).Error("connecting to MongoDB, falling back to memory", sl.Err(err))
 			store = storage.NewMemoryStorage()
 		} else {
 			log.Info("using MongoDB storage")
