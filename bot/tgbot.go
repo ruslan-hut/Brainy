@@ -18,6 +18,7 @@ type TgBot struct {
 	api         *tgbotapi.BotAPI
 	chat        core.ChatService
 	botUsername string
+	stopChan    chan struct{}
 }
 
 func NewTgBot(conf *core.Config, log *slog.Logger) (*TgBot, error) {
@@ -25,6 +26,7 @@ func NewTgBot(conf *core.Config, log *slog.Logger) (*TgBot, error) {
 		conf:        conf,
 		log:         log.With(sl.Module("tgbot")),
 		botUsername: conf.Username,
+		stopChan:    make(chan struct{}),
 	}
 
 	api, err := tgbotapi.NewBotAPI(conf.TelegramApiKey)
@@ -53,52 +55,60 @@ func (t *TgBot) Start() error {
 	}
 
 	// Define a command handler
-	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-
-		incoming := update.Message
-		chat := incoming.Chat
-		question := incoming.Text
-
-		if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
-			continue
-		}
-		if incoming.IsCommand() {
-			if incoming.Command() == "help" {
-				text := "You can use the following commands:\n"
-				text += "/help - show this help\n"
-				text += "/hello - bot says random fact\n"
-				text += "/topic - set a subject of conversation\n"
-				text += "/ask - ask something or just reply on previous bot message\n"
-				text += "/clear - clear bot memory to begin new topic\n"
-				t.plainResponse(chat.ID, text)
+	for {
+		select {
+		case update := <-updates:
+			if update.Message == nil {
 				continue
 			}
-			if incoming.Command() == "ask" {
-				question = strings.TrimPrefix(question, "/ask")
+
+			incoming := update.Message
+			chat := incoming.Chat
+			question := incoming.Text
+
+			if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
+				continue
 			}
-		}
-		if t.isMentioned(incoming.Text) {
-			question = strings.ReplaceAll(question, "@"+t.botUsername, "")
-		}
+			if incoming.IsCommand() {
+				if incoming.Command() == "help" {
+					text := "You can use the following commands:\n"
+					text += "/help - show this help\n"
+					text += "/hello - bot says random fact\n"
+					text += "/topic - set a subject of conversation\n"
+					text += "/ask - ask something or just reply on previous bot message\n"
+					text += "/clear - clear bot memory to begin new topic\n"
+					t.plainResponse(chat.ID, text)
+					continue
+				}
+				if incoming.Command() == "ask" {
+					question = strings.TrimPrefix(question, "/ask")
+				}
+			}
+			if t.isMentioned(incoming.Text) {
+				question = strings.ReplaceAll(question, "@"+t.botUsername, "")
+			}
 
-		logText := question
-		if len(logText) > 50 {
-			logText = logText[:50] + "..."
+			logText := question
+			if len(logText) > 50 {
+				logText = logText[:50] + "..."
+			}
+			t.log.With(
+				slog.String("user", chat.UserName),
+				slog.Int64("id", chat.ID),
+				slog.String("text", logText),
+			).Info("incoming message")
+
+			go t.SendResponse(chat.ID, question)
+
+		case <-t.stopChan:
+			t.log.Info("stopping bot gracefully")
+			return nil
 		}
-		t.log.With(
-			slog.String("user", chat.UserName),
-			slog.Int64("id", chat.ID),
-			slog.String("text", logText),
-		).Info("incoming message")
-
-		go t.SendResponse(chat.ID, question)
-
 	}
+}
 
-	return nil
+func (t *TgBot) Stop() {
+	close(t.stopChan)
 }
 
 func (t *TgBot) sendChatAction(chatId int64, action string) {
@@ -198,21 +208,55 @@ func (t *TgBot) isReplyToBot(message *tgbotapi.Message) bool {
 }
 
 func sanitize(input string) string {
-	// Define a list of reserved characters that need to be escaped
-	reservedChars := "\\`_{}#+-.!|()"
+	var result strings.Builder
+	// Reserved chars for MarkdownV2 (excluding backtick which we handle specially)
+	reservedChars := "\\_{}#+-.!|()"
+	runes := []rune(input)
+	i := 0
 
-	// Loop through each character in the input string
-	sanitized := ""
-	for _, char := range input {
-		// Check if the character is reserved
-		if strings.ContainsRune(reservedChars, char) {
-			// Escape the character with a backslash
-			sanitized += "\\" + string(char)
-		} else {
-			// Add the character to the sanitized string
-			sanitized += string(char)
+	for i < len(runes) {
+		// Check for triple backtick code block
+		if i+2 < len(runes) && runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
+			result.WriteString("```")
+			i += 3
+
+			// Find the closing ```
+			for i < len(runes) {
+				if i+2 < len(runes) && runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
+					result.WriteString("```")
+					i += 3
+					break
+				}
+				result.WriteRune(runes[i])
+				i++
+			}
+			continue
 		}
+
+		// Check for single backtick inline code
+		if runes[i] == '`' {
+			result.WriteRune('`')
+			i++
+
+			// Find the closing `
+			for i < len(runes) && runes[i] != '`' {
+				result.WriteRune(runes[i])
+				i++
+			}
+			if i < len(runes) {
+				result.WriteRune('`')
+				i++
+			}
+			continue
+		}
+
+		// Normal character - escape if reserved
+		if strings.ContainsRune(reservedChars, runes[i]) {
+			result.WriteRune('\\')
+		}
+		result.WriteRune(runes[i])
+		i++
 	}
 
-	return sanitized
+	return result.String()
 }

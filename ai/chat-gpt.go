@@ -4,34 +4,46 @@ import (
 	"Brainy/core"
 	"Brainy/holder"
 	"Brainy/lib/sl"
+	"Brainy/storage"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type ChatGPT struct {
 	conf           *core.Config
 	log            *slog.Logger
 	contextManager *holder.ContextManager
+	httpClient     *http.Client
 }
 
-func NewChat(conf *core.Config, log *slog.Logger) *ChatGPT {
+func NewChat(conf *core.Config, log *slog.Logger, store storage.ContextStorage) *ChatGPT {
 	return &ChatGPT{
 		conf:           conf,
 		log:            log.With(sl.Module("chat-gpt")),
-		contextManager: holder.NewContextManager(),
+		contextManager: holder.NewContextManager(store),
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+		},
 	}
 }
 
+func (c *ChatGPT) Close() error {
+	return c.contextManager.Close()
+}
+
 func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
-	client := &http.Client{}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	prompt := c.composePrompt(userId, question)
 
-	request := NewRequest(prompt)
+	request := NewRequest(prompt, c.conf.Model)
 	jsonBytes, err := json.Marshal(request)
 	if err != nil {
 		return "", fmt.Errorf("error marshalling request: %v", err)
@@ -39,7 +51,7 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	requestBody := strings.NewReader(string(jsonBytes))
 
 	// Create a new request with the ChatGPT API URL
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", requestBody)
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", requestBody)
 	if err != nil {
 		return "", fmt.Errorf("making request: %v", err)
 	}
@@ -49,7 +61,7 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Send the request and get the response
-	resp, err := client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("getting response: %v", err)
 	}

@@ -11,9 +11,9 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-func NewRequest(content string) *GPTRequest {
+func NewRequest(content string, model string) *GPTRequest {
 	return &GPTRequest{
-		Model:    "gpt-4.1-mini",
+		Model:    model,
 		Messages: []Message{{Role: "user", Content: content}},
 		//Temperature: 0.7,
 	}

@@ -12,6 +12,7 @@ type Config struct {
 	TelegramApiKey string `yaml:"telegram_api_key" env-default:""`
 	OpenAIApiKey   string `yaml:"openai_api_key" env-default:""`
 	Username       string `yaml:"username" env-default:""`
+	Model          string `yaml:"model" env-default:"gpt-4.1-mini"`
 	Mongo          struct {
 		Enabled  bool   `yaml:"enabled" env-default:"false"`
 		Host     string `yaml:"host" env-default:"127.0.0.1"`

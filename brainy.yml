@@ -4,8 +4,9 @@ env: dev
 telegram_api_key: ${TELEGRAM_API_KEY}
 openai_api_key: ${OPENAI_API_KEY}
 username: ${BOT_USERNAME}
+model: gpt-5-nano
 mongo:
-  enabled: false
+  enabled: true
   host: ${MONGO_HOST}
   port: ${MONGO_PORT}
   user: ${MONGO_USER}

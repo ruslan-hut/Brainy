@@ -4,6 +4,7 @@ env: local
 telegram_api_key: YOUR_TELEGRAM_API_KEY
 openai_api_key: YOUR_OPENAI_API_KEY
 username: BOT_USERNAME
+model: gpt-model
 mongo:
   enabled: false
   host: 127.0.0.1

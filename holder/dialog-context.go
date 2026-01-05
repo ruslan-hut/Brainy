@@ -1,98 +1,53 @@
 package holder
 
 import (
+	"Brainy/storage"
 	"log"
-	"sync"
-	"time"
 )
 
-const maxTokens = 20000
+// Message is an alias for storage.Message for backward compatibility
+type Message = storage.Message
 
-type Message struct {
-	IsUser    bool
-	Text      string
-	Tokens    int
-	Timestamp time.Time
-}
-
-type DialogContext struct {
-	UserId    int64
-	Topic     string
-	Messages  []Message
-	Tokens    int
-	UpdatedAt time.Time
-}
+// DialogContext is an alias for storage.DialogContext for backward compatibility
+type DialogContext = storage.DialogContext
 
 type ContextManager struct {
-	Contexts map[int64]*DialogContext
-	mutex    sync.RWMutex
+	storage storage.ContextStorage
 }
 
-func NewContextManager() *ContextManager {
+func NewContextManager(store storage.ContextStorage) *ContextManager {
 	return &ContextManager{
-		Contexts: make(map[int64]*DialogContext),
-		mutex:    sync.RWMutex{},
+		storage: store,
 	}
 }
 
 func (cm *ContextManager) GetUserContext(userId int64) *DialogContext {
-	cm.mutex.RLock()
-	defer cm.mutex.RUnlock()
-	return cm.Contexts[userId]
+	ctx, err := cm.storage.GetUserContext(userId)
+	if err != nil {
+		log.Printf("error getting user context: %v", err)
+		return nil
+	}
+	return ctx
 }
 
 func (cm *ContextManager) UpdateUserContext(userId int64, message Message) {
-	cm.mutex.Lock()
-	defer cm.mutex.Unlock()
-
-	// Calculate the number of tokens in the new message
-	message.Tokens = len([]rune(message.Text))
-
-	if context, ok := cm.Contexts[userId]; ok {
-
-		// Add the tokens from the new message to the total
-		context.Tokens += message.Tokens
-
-		// If the total tokens with the new message exceed the maximum,
-		// remove messages from the beginning until it is within the limit.
-		for context.Tokens > maxTokens {
-			log.Printf("ContextManager: removing message from context of user %d", userId)
-			context.Messages = context.Messages[1:]
-			context.Tokens -= context.Messages[0].Tokens
-		}
-
-		context.Messages = append(context.Messages, message)
-		context.UpdatedAt = time.Now()
-
-	} else {
-		cm.Contexts[userId] = &DialogContext{
-			UserId:    userId,
-			Messages:  []Message{message},
-			Tokens:    message.Tokens,
-			UpdatedAt: time.Now(),
-		}
+	if err := cm.storage.UpdateUserContext(userId, message); err != nil {
+		log.Printf("error updating user context: %v", err)
 	}
 }
 
 func (cm *ContextManager) SetTopic(userId int64, topic string) {
-	cm.mutex.Lock()
-	defer cm.mutex.Unlock()
-
-	if context, ok := cm.Contexts[userId]; ok {
-		context.Topic = topic
-	} else {
-		cm.Contexts[userId] = &DialogContext{
-			UserId:    userId,
-			Topic:     topic,
-			Messages:  []Message{},
-			Tokens:    0,
-			UpdatedAt: time.Now(),
-		}
+	if err := cm.storage.SetTopic(userId, topic); err != nil {
+		log.Printf("error setting topic: %v", err)
 	}
 }
 
 func (cm *ContextManager) ClearUserContext(userId int64) {
-	cm.mutex.Lock()
-	defer cm.mutex.Unlock()
-	delete(cm.Contexts, userId)
+	if err := cm.storage.ClearUserContext(userId); err != nil {
+		log.Printf("error clearing user context: %v", err)
+	}
+}
+
+func (cm *ContextManager) Close() error {
+	return cm.storage.Close()
 }
