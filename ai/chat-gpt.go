@@ -42,6 +42,144 @@ func (c *ChatGPT) ClearContext(userId int64) {
 	c.contextManager.ClearUserContext(userId)
 }
 
+// GenerateImage generates an image using DALL-E API
+func (c *ChatGPT) GenerateImage(userId int64, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	request := NewImageRequest(prompt)
+	jsonBytes, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("error marshalling image request: %v", err)
+	}
+	requestBody := strings.NewReader(string(jsonBytes))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/images/generations", requestBody)
+	if err != nil {
+		return "", fmt.Errorf("making image request: %v", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.conf.OpenAIApiKey))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("getting image response: %v", err)
+	}
+
+	defer func(Body io.ReadCloser) {
+		err = Body.Close()
+		if err != nil {
+			c.log.Error("closing image response body", sl.Err(err))
+		}
+	}(resp.Body)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading image response body: %v", err)
+	}
+
+	var imageResponse ImageGenerationResponse
+	err = json.Unmarshal(body, &imageResponse)
+	if err != nil {
+		return "", fmt.Errorf("decoding image response: %v", err)
+	}
+
+	if imageResponse.Error != nil {
+		c.log.With(
+			slog.Int64("user", userId),
+			slog.String("code", imageResponse.Error.Code),
+			slog.String("message", imageResponse.Error.Message),
+		).Error("image generation error")
+		return "", fmt.Errorf("image generation: %s", imageResponse.Error.Message)
+	}
+
+	if len(imageResponse.Data) == 0 {
+		return "", fmt.Errorf("image generation: empty response")
+	}
+
+	imageURL := imageResponse.Data[0].URL
+	c.log.With(
+		slog.Int64("user", userId),
+		slog.String("prompt", prompt),
+	).Info("image generated")
+
+	return imageURL, nil
+}
+
+// DetectImageIntent uses GPT to detect if user wants to generate an image
+func (c *ChatGPT) DetectImageIntent(question string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	detectPrompt := `Analyze the following user message and determine if they want to generate/create an image.
+Respond in JSON format only: {"wants_image": true/false, "image_prompt": "optimized prompt for DALL-E if wants_image is true, otherwise empty string"}
+
+Rules for detection:
+- "wants_image" should be true if user explicitly asks to create, generate, draw, paint, make, design, or visualize an image/picture/photo/illustration
+- "wants_image" should be true if user asks for visual content like "show me", "I want to see", "create a picture of"
+- "wants_image" should be false for questions about images, image editing, or general conversation
+- If wants_image is true, create an optimized detailed prompt for DALL-E image generation based on user's request
+
+User message: ` + question
+
+	request := NewRequest(detectPrompt, c.conf.Model)
+	jsonBytes, err := json.Marshal(request)
+	if err != nil {
+		return false, ""
+	}
+	requestBody := strings.NewReader(string(jsonBytes))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", requestBody)
+	if err != nil {
+		return false, ""
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.conf.OpenAIApiKey))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, ""
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, ""
+	}
+
+	var chatCompletion ChatCompletion
+	err = json.Unmarshal(body, &chatCompletion)
+	if err != nil || len(chatCompletion.Choices) == 0 {
+		return false, ""
+	}
+
+	// Parse the JSON response
+	type IntentResponse struct {
+		WantsImage  bool   `json:"wants_image"`
+		ImagePrompt string `json:"image_prompt"`
+	}
+
+	var intentResp IntentResponse
+	responseText := chatCompletion.Choices[0].Message.Content
+	// Try to extract JSON from the response
+	responseText = strings.TrimSpace(responseText)
+	if strings.HasPrefix(responseText, "```json") {
+		responseText = strings.TrimPrefix(responseText, "```json")
+		responseText = strings.TrimSuffix(responseText, "```")
+	}
+	responseText = strings.TrimSpace(responseText)
+
+	err = json.Unmarshal([]byte(responseText), &intentResp)
+	if err != nil {
+		c.log.With(slog.String("response", responseText)).Debug("failed to parse intent response")
+		return false, ""
+	}
+
+	return intentResp.WantsImage, intentResp.ImagePrompt
+}
+
 // SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
 func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
 	c.prefsAnalyzer = pa

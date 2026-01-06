@@ -5,11 +5,17 @@ import (
 	"Brainy/lib/sl"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
+
+var smileEmojis = []string{
+	"😊", "😄", "😁", "🙂", "😉", "🤗", "😇", "🥰", "😎", "🤔",
+	"👀", "🙈", "🤷", "👍", "✨", "🎉", "💫", "🌟", "🔥", "💯",
+}
 
 const errorResponse = "Sorry, I'm not feeling well today. Please try again later."
 
@@ -70,6 +76,17 @@ func (t *TgBot) Start() error {
 			if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
 				continue
 			}
+
+			// Check for non-text messages (images, voice, stickers, etc.)
+			if question == "" {
+				t.log.With(
+					slog.String("user", chat.UserName),
+					slog.Int64("id", chat.ID),
+				).Debug("non-text message received")
+				t.sendRandomEmoji(chat.ID)
+				continue
+			}
+
 			if incoming.IsCommand() {
 				if incoming.Command() == "help" {
 					text := "You can use the following commands:\n"
@@ -77,12 +94,22 @@ func (t *TgBot) Start() error {
 					text += "/hello - bot says random fact\n"
 					text += "/topic - set a subject of conversation\n"
 					text += "/ask - ask something or just reply on previous bot message\n"
+					text += "/imagine - generate an image from description\n"
 					text += "/clear - clear bot memory to begin new topic\n"
 					t.plainResponse(chat.ID, text)
 					continue
 				}
 				if incoming.Command() == "ask" {
 					question = strings.TrimPrefix(question, "/ask")
+				}
+				if incoming.Command() == "imagine" {
+					imagePrompt := strings.TrimSpace(strings.TrimPrefix(question, "/imagine"))
+					if imagePrompt == "" {
+						t.plainResponse(chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
+						continue
+					}
+					go t.SendImageResponse(chat.ID, imagePrompt)
+					continue
 				}
 				if incoming.Command() == "clear" {
 					t.log.With(
@@ -132,6 +159,17 @@ func (t *TgBot) sendChatAction(chatId int64, action string) {
 	}
 }
 
+func (t *TgBot) sendRandomEmoji(chatId int64) {
+	emoji := smileEmojis[rand.Intn(len(smileEmojis))]
+	msg := tgbotapi.NewMessage(chatId, emoji)
+	_, err := t.api.Send(msg)
+	if err != nil {
+		t.log.With(
+			slog.Int64("id", chatId),
+		).Error("sending emoji", sl.Err(err))
+	}
+}
+
 func (t *TgBot) composeReply(chatId int64, request string) string {
 	// Get the response from the chat service
 	response, err := t.chat.GetResponse(chatId, request)
@@ -145,6 +183,17 @@ func (t *TgBot) composeReply(chatId int64, request string) string {
 }
 
 func (t *TgBot) SendResponse(chatId int64, request string) {
+	// First, detect if user wants to generate an image
+	wantsImage, imagePrompt := t.chat.DetectImageIntent(request)
+	if wantsImage && imagePrompt != "" {
+		t.log.With(
+			slog.Int64("id", chatId),
+			slog.String("prompt", imagePrompt),
+		).Info("detected image generation intent")
+		t.SendImageResponse(chatId, imagePrompt)
+		return
+	}
+
 	stopTicker := make(chan bool)
 	replyReady := make(chan string)
 
@@ -173,6 +222,69 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 	stopTicker <- true
 
 	t.plainResponse(chatId, reply)
+}
+
+// SendImageResponse generates and sends an image
+func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
+	stopTicker := make(chan bool)
+	imageReady := make(chan string)
+	errorChan := make(chan error)
+
+	t.sendChatAction(chatId, "upload_photo")
+
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				t.sendChatAction(chatId, "upload_photo")
+			case <-stopTicker:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		imageURL, err := t.chat.GenerateImage(chatId, prompt)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		imageReady <- imageURL
+	}()
+
+	select {
+	case imageURL := <-imageReady:
+		stopTicker <- true
+		t.sendImage(chatId, imageURL, prompt)
+	case err := <-errorChan:
+		stopTicker <- true
+		t.log.With(
+			slog.Int64("id", chatId),
+		).Error("generating image", sl.Err(err))
+		t.plainResponse(chatId, "Sorry, I couldn't generate the image. Please try again with a different description.")
+	}
+}
+
+func (t *TgBot) sendImage(chatId int64, imageURL string, caption string) {
+	// Truncate caption if too long (Telegram limit is 1024)
+	if len(caption) > 200 {
+		caption = caption[:197] + "..."
+	}
+
+	msg := tgbotapi.NewPhotoShare(chatId, imageURL)
+	msg.Caption = caption
+	_, err := t.api.Send(msg)
+	if err != nil {
+		t.log.With(
+			slog.Int64("id", chatId),
+			slog.String("url", imageURL),
+		).Error("sending image", sl.Err(err))
+		// Fallback: send the URL as text
+		t.plainResponse(chatId, "Generated image: "+imageURL)
+	}
 }
 
 func (t *TgBot) plainResponse(chatId int64, text string) {
