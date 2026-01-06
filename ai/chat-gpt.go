@@ -37,6 +37,10 @@ func (c *ChatGPT) Close() error {
 	return c.contextManager.Close()
 }
 
+func (c *ChatGPT) ClearContext(userId int64) {
+	c.contextManager.ClearUserContext(userId)
+}
+
 func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -4,10 +4,11 @@ import (
 	"Brainy/core"
 	"Brainy/lib/sl"
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"log/slog"
 	"strings"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 const errorResponse = "Sorry, I'm not feeling well today. Please try again later."
@@ -82,6 +83,15 @@ func (t *TgBot) Start() error {
 				}
 				if incoming.Command() == "ask" {
 					question = strings.TrimPrefix(question, "/ask")
+				}
+				if incoming.Command() == "clear" {
+					t.log.With(
+						slog.String("user", chat.UserName),
+						slog.Int64("id", chat.ID),
+					).Info("context cleared")
+					t.chat.ClearContext(chat.ID)
+					t.plainResponse(chat.ID, "context cleared")
+					continue
 				}
 			}
 			if t.isMentioned(incoming.Text) {
