@@ -230,7 +230,7 @@ func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
 	imageReady := make(chan string)
 	errorChan := make(chan error)
 
-	t.sendChatAction(chatId, "upload_photo")
+	t.sendChatAction(chatId, "typing")
 
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
@@ -239,7 +239,7 @@ func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
 		for {
 			select {
 			case <-ticker.C:
-				t.sendChatAction(chatId, "upload_photo")
+				t.sendChatAction(chatId, "typing")
 			case <-stopTicker:
 				return
 			}
