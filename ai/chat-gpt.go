@@ -47,7 +47,10 @@ func (c *ChatGPT) GenerateImage(userId int64, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	request := NewImageRequest(prompt)
+	// Apply Futurama cartoon style to all generated images
+	styledPrompt := prompt + ". Style: cartoon animation like Futurama TV series, bold outlines, vibrant colors, Matt Groening art style"
+
+	request := NewImageRequest(styledPrompt)
 	jsonBytes, err := json.Marshal(request)
 	if err != nil {
 		return "", fmt.Errorf("error marshalling image request: %v", err)

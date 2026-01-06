@@ -258,7 +258,7 @@ func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
 	select {
 	case imageURL := <-imageReady:
 		stopTicker <- true
-		t.sendImage(chatId, imageURL, prompt)
+		t.sendImage(chatId, imageURL)
 	case err := <-errorChan:
 		stopTicker <- true
 		t.log.With(
@@ -268,14 +268,8 @@ func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
 	}
 }
 
-func (t *TgBot) sendImage(chatId int64, imageURL string, caption string) {
-	// Truncate caption if too long (Telegram limit is 1024)
-	if len(caption) > 200 {
-		caption = caption[:197] + "..."
-	}
-
+func (t *TgBot) sendImage(chatId int64, imageURL string) {
 	msg := tgbotapi.NewPhotoShare(chatId, imageURL)
-	msg.Caption = caption
 	_, err := t.api.Send(msg)
 	if err != nil {
 		t.log.With(
