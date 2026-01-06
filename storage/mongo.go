@@ -140,3 +140,13 @@ func (m *MongoStorage) Close() error {
 	defer cancel()
 	return m.client.Disconnect(ctx)
 }
+
+// GetClient returns the MongoDB client for sharing with other storages
+func (m *MongoStorage) GetClient() *mongo.Client {
+	return m.client
+}
+
+// GetDatabase returns the database name
+func (m *MongoStorage) GetDatabase() string {
+	return m.collection.Database().Name()
+}

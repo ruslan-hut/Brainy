@@ -20,6 +20,7 @@ type ChatGPT struct {
 	log            *slog.Logger
 	contextManager *holder.ContextManager
 	httpClient     *http.Client
+	prefsAnalyzer  *PreferencesAnalyzer
 }
 
 func NewChat(conf *core.Config, log *slog.Logger, store storage.ContextStorage) *ChatGPT {
@@ -39,6 +40,11 @@ func (c *ChatGPT) Close() error {
 
 func (c *ChatGPT) ClearContext(userId int64) {
 	c.contextManager.ClearUserContext(userId)
+}
+
+// SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
+func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
+	c.prefsAnalyzer = pa
 }
 
 func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
@@ -153,6 +159,10 @@ func (c *ChatGPT) composePrompt(userId int64, question string) string {
 	}
 
 	if strings.HasPrefix(question, "/clear") {
+		// Trigger analysis before clearing context (if analyzer is set)
+		if c.prefsAnalyzer != nil {
+			c.prefsAnalyzer.TriggerAnalysisAsync(userId)
+		}
 		c.contextManager.ClearUserContext(userId)
 		return "Let's talk."
 	}
@@ -161,6 +171,11 @@ func (c *ChatGPT) composePrompt(userId int64, question string) string {
 		topic := strings.TrimPrefix(question, "/topic ")
 		c.contextManager.SetTopic(userId, topic)
 		return "Let's talk about " + topic + "."
+	}
+
+	// Track user message time for preferences analysis
+	if c.prefsAnalyzer != nil {
+		c.prefsAnalyzer.UpdateLastMessageTime(userId)
 	}
 
 	// add user message to context
@@ -192,6 +207,14 @@ func LanguageTranslatePrompt(language string) string {
 
 func (c *ChatGPT) getContext(userId int64) string {
 	t := ""
+
+	// Inject user preferences if available
+	if c.prefsAnalyzer != nil {
+		if prefs := c.prefsAnalyzer.GetUserPreferences(userId); prefs != nil {
+			t = c.buildPreferencesPrompt(prefs)
+		}
+	}
+
 	dialogContext := c.contextManager.GetUserContext(userId)
 	if dialogContext != nil {
 		c.log.With(
@@ -199,7 +222,10 @@ func (c *ChatGPT) getContext(userId int64) string {
 			slog.Int("tokens", dialogContext.Tokens),
 		).Info("user context")
 		if dialogContext.Topic != "" {
-			t = "Subject: " + dialogContext.Topic
+			if t != "" {
+				t += "\n"
+			}
+			t += "Subject: " + dialogContext.Topic
 		}
 		t += "\nPrevious messages of you as Assistant and me as User: "
 		for _, message := range dialogContext.Messages {
@@ -211,4 +237,34 @@ func (c *ChatGPT) getContext(userId int64) string {
 		}
 	}
 	return t
+}
+
+func (c *ChatGPT) buildPreferencesPrompt(prefs *storage.UserPreferences) string {
+	var parts []string
+
+	parts = append(parts, "User preferences (adapt your responses accordingly):")
+
+	if prefs.PreferredLanguage != "" {
+		parts = append(parts, fmt.Sprintf("- Preferred language: %s", prefs.PreferredLanguage))
+	}
+	if prefs.Formality != "" {
+		parts = append(parts, fmt.Sprintf("- Communication style: %s", prefs.Formality))
+	}
+	if prefs.Verbosity != "" {
+		parts = append(parts, fmt.Sprintf("- Detail level: %s", prefs.Verbosity))
+	}
+	if prefs.TechnicalLevel != "" {
+		parts = append(parts, fmt.Sprintf("- Technical level: %s", prefs.TechnicalLevel))
+	}
+	if prefs.HumorPreference != "" && prefs.HumorPreference != "none" {
+		parts = append(parts, fmt.Sprintf("- Humor: %s", prefs.HumorPreference))
+	}
+	if prefs.ResponseLength != "" {
+		parts = append(parts, fmt.Sprintf("- Response length: %s", prefs.ResponseLength))
+	}
+	if len(prefs.FavoriteTopics) > 0 {
+		parts = append(parts, fmt.Sprintf("- Interests: %s", strings.Join(prefs.FavoriteTopics, ", ")))
+	}
+
+	return strings.Join(parts, "\n")
 }
