@@ -11,7 +11,7 @@ type ChatService interface {
 	Ask(userId int64, text string) (Response, error)
 	OneShot(prompt string) (string, error)
 	Translate(language, word string) (string, error)
-	GenerateImage(userId int64, prompt string) (string, error)
+	GenerateImage(userId int64, prompt string) ([]byte, error)
 	SetTopic(userId int64, topic string)
 	ClearContext(userId int64)
 }

@@ -276,25 +276,16 @@ func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
 }
 
 func (t *TgBot) generateAndSendImage(chatId int64, prompt string) {
-	imageURL, err := t.chat.GenerateImage(chatId, prompt)
+	data, err := t.chat.GenerateImage(chatId, prompt)
 	if err != nil {
 		t.log.With(slog.Int64("id", chatId)).Error("generating image", sl.Err(err))
 		t.plainResponse(chatId, "Sorry, I couldn't generate the image. Please try again with a different description.")
 		return
 	}
-	t.sendImage(chatId, imageURL)
-}
-
-func (t *TgBot) sendImage(chatId int64, imageURL string) {
-	msg := tgbotapi.NewPhotoShare(chatId, imageURL)
-	_, err := t.api.Send(msg)
-	if err != nil {
-		t.log.With(
-			slog.Int64("id", chatId),
-			slog.String("url", imageURL),
-		).Error("sending image", sl.Err(err))
-		// Fallback: send the URL as text
-		t.plainResponse(chatId, "Generated image: "+imageURL)
+	msg := tgbotapi.NewPhotoUpload(chatId, tgbotapi.FileBytes{Name: "image.png", Bytes: data})
+	if _, err := t.api.Send(msg); err != nil {
+		t.log.With(slog.Int64("id", chatId)).Error("sending image", sl.Err(err))
+		t.plainResponse(chatId, "Sorry, I couldn't send the image.")
 	}
 }
 

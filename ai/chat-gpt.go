@@ -6,6 +6,7 @@ import (
 	"Brainy/lib/sl"
 	"Brainy/storage"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -78,33 +79,45 @@ func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
 	c.prefsAnalyzer = pa
 }
 
-// GenerateImage generates an image using the configured image model and returns the URL.
-// Only dall-e-2 / dall-e-3 are supported; gpt-image-* is b64-only.
-func (c *ChatGPT) GenerateImage(userId int64, prompt string) (string, error) {
+// GenerateImage generates an image using the configured image model and returns
+// the raw image bytes (PNG). Works with gpt-image-* (always b64) and dall-e-*
+// (forced to b64 via response_format).
+func (c *ChatGPT) GenerateImage(userId int64, prompt string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	resp, err := c.client.Images.Generate(ctx, openai.ImageGenerateParams{
-		Prompt:         prompt + c.conf.ImageStyle,
-		Model:          openai.ImageModel(c.conf.ImageModel),
-		Size:           openai.ImageGenerateParamsSize(c.conf.ImageSize),
-		ResponseFormat: openai.ImageGenerateParamsResponseFormatURL,
-		N:              openai.Int(1),
-	})
+	params := openai.ImageGenerateParams{
+		Prompt: prompt + c.conf.ImageStyle,
+		Model:  openai.ImageModel(c.conf.ImageModel),
+		Size:   openai.ImageGenerateParamsSize(c.conf.ImageSize),
+		N:      openai.Int(1),
+	}
+	// gpt-image-* always returns b64 and rejects response_format.
+	if !strings.HasPrefix(c.conf.ImageModel, "gpt-image") {
+		params.ResponseFormat = openai.ImageGenerateParamsResponseFormatB64JSON
+	}
+
+	resp, err := c.client.Images.Generate(ctx, params)
 	if err != nil {
 		c.log.With(slog.Int64("user", userId)).Error("image generation", sl.Err(err))
-		return "", fmt.Errorf("image generation: %w", err)
+		return nil, fmt.Errorf("image generation: %w", err)
 	}
-	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
-		return "", fmt.Errorf("image generation: empty response")
+	if len(resp.Data) == 0 || resp.Data[0].B64JSON == "" {
+		return nil, fmt.Errorf("image generation: empty response")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(resp.Data[0].B64JSON)
+	if err != nil {
+		return nil, fmt.Errorf("decoding image: %w", err)
 	}
 
 	c.log.With(
 		slog.Int64("user", userId),
 		slog.String("prompt", prompt),
+		slog.Int("bytes", len(data)),
 	).Info("image generated")
 
-	return resp.Data[0].URL, nil
+	return data, nil
 }
 
 // Ask runs a conversational turn with full history and tools.
