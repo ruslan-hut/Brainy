@@ -213,10 +213,6 @@ func (t *TgBot) SendResponse(chatId int64, request string) {
 			return
 		}
 		if resp.ImagePrompt != "" {
-			t.log.With(
-				slog.Int64("id", chatId),
-				slog.String("prompt", resp.ImagePrompt),
-			).Info("detected image generation intent")
 			t.generateAndSendImage(chatId, resp.ImagePrompt)
 			return
 		}
