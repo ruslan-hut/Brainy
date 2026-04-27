@@ -29,7 +29,6 @@ func (m *MemoryStorage) UpdateUserContext(userId int64, message Message) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	message.Tokens = len([]rune(message.Text))
 	message.Timestamp = time.Now()
 
 	if context, ok := m.contexts[userId]; ok {
@@ -52,6 +51,15 @@ func (m *MemoryStorage) UpdateUserContext(userId int64, message Message) error {
 			Tokens:    message.Tokens,
 			UpdatedAt: time.Now(),
 		}
+	}
+	return nil
+}
+
+func (m *MemoryStorage) SetTokens(userId int64, total int) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	if context, ok := m.contexts[userId]; ok {
+		context.Tokens = total
 	}
 	return nil
 }

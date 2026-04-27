@@ -5,6 +5,7 @@ import (
 	"Brainy/bot"
 	"Brainy/core"
 	"Brainy/lib/sl"
+	"Brainy/lib/tokens"
 	"Brainy/storage"
 	"flag"
 	"fmt"
@@ -33,6 +34,10 @@ func main() {
 		slog.String("env", conf.Env),
 		slog.String("model", conf.Model),
 	).Info("starting brainy bot")
+
+	if err := tokens.Init(conf.Model); err != nil {
+		log.Warn("tokenizer init, using fallback estimator", sl.Err(err))
+	}
 
 	// Initialize storage based on config
 	var store storage.ContextStorage

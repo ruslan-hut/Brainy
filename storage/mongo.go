@@ -72,7 +72,6 @@ func (m *MongoStorage) UpdateUserContext(userId int64, message Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	message.Tokens = len([]rune(message.Text))
 	message.Timestamp = time.Now()
 
 	existing, err := m.GetUserContext(userId)
@@ -103,6 +102,16 @@ func (m *MongoStorage) UpdateUserContext(userId int64, message Message) error {
 	existing.UpdatedAt = time.Now()
 
 	_, err = m.collection.ReplaceOne(ctx, bson.M{"user_id": userId}, existing)
+	return err
+}
+
+func (m *MongoStorage) SetTokens(userId int64, total int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := m.collection.UpdateOne(ctx,
+		bson.M{"user_id": userId},
+		bson.M{"$set": bson.M{"tokens": total}},
+	)
 	return err
 }
 

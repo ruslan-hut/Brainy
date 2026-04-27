@@ -4,6 +4,7 @@ import (
 	"Brainy/core"
 	"Brainy/holder"
 	"Brainy/lib/sl"
+	"Brainy/lib/tokens"
 	"Brainy/storage"
 	"context"
 	"encoding/base64"
@@ -165,8 +166,18 @@ func (c *ChatGPT) Ask(userId int64, question string) (core.Response, error) {
 	}
 
 	text := msg.Content
-	c.contextManager.UpdateUserContext(userId, holder.Message{Text: question, IsUser: true})
-	c.contextManager.UpdateUserContext(userId, holder.Message{Text: text, IsUser: false})
+	c.contextManager.UpdateUserContext(userId, holder.Message{
+		Text:   question,
+		IsUser: true,
+		Tokens: tokens.Count(question),
+	})
+	c.contextManager.UpdateUserContext(userId, holder.Message{
+		Text:   text,
+		IsUser: false,
+		Tokens: int(completion.Usage.CompletionTokens),
+	})
+	// Reconcile cumulative count with API-reported usage.
+	c.contextManager.SetTokens(userId, int(completion.Usage.PromptTokens+completion.Usage.CompletionTokens))
 
 	logText := text
 	if len(logText) > 50 {

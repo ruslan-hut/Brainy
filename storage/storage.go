@@ -20,6 +20,9 @@ type DialogContext struct {
 type ContextStorage interface {
 	GetUserContext(userId int64) (*DialogContext, error)
 	UpdateUserContext(userId int64, message Message) error
+	// SetTokens overwrites the conversation's cumulative token count.
+	// Used to reconcile estimated counts with the model's reported usage.
+	SetTokens(userId int64, total int) error
 	SetTopic(userId int64, topic string) error
 	ClearUserContext(userId int64) error
 	Close() error

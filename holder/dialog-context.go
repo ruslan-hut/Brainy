@@ -36,6 +36,12 @@ func (cm *ContextManager) UpdateUserContext(userId int64, message Message) {
 	}
 }
 
+func (cm *ContextManager) SetTokens(userId int64, total int) {
+	if err := cm.storage.SetTokens(userId, total); err != nil {
+		log.Printf("error setting tokens: %v", err)
+	}
+}
+
 func (cm *ContextManager) SetTopic(userId int64, topic string) {
 	if err := cm.storage.SetTopic(userId, topic); err != nil {
 		log.Printf("error setting topic: %v", err)
