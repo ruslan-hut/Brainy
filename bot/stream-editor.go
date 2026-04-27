@@ -139,12 +139,19 @@ func (e *streamEditor) finalize(finalText string) {
 	edit := tgbotapi.NewEditMessageText(e.chatId, msgID, sanitized)
 	edit.ParseMode = "MarkdownV2"
 	if _, err := e.bot.api.Send(edit); err != nil {
+		if isNotModified(err) {
+			return
+		}
 		// Markdown failed; retry without parse mode.
 		fallback := tgbotapi.NewEditMessageText(e.chatId, msgID, finalText)
-		if _, err2 := e.bot.api.Send(fallback); err2 != nil {
+		if _, err2 := e.bot.api.Send(fallback); err2 != nil && !isNotModified(err2) {
 			e.bot.log.With(slog.Int64("id", e.chatId)).Warn("stream finalize", sl.Err(err2))
 		}
 	}
+}
+
+func isNotModified(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "message is not modified")
 }
 
 // deleteIfPosted removes the streaming placeholder if one was posted.
