@@ -12,7 +12,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
-const streamEditInterval = 900 * time.Millisecond
+const streamEditInterval = 400 * time.Millisecond
 
 var smileEmojis = []string{
 	"😊", "😄", "😁", "🙂", "😉", "🤗", "😇", "🥰", "😎", "🤔",

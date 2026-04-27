@@ -24,6 +24,7 @@ type streamEditor struct {
 	msgID   int
 	stopped bool
 
+	wakeCh chan struct{}
 	stopCh chan struct{}
 	doneCh chan struct{}
 }
@@ -32,6 +33,7 @@ func newStreamEditor(bot *TgBot, chatId int64) *streamEditor {
 	return &streamEditor{
 		bot:    bot,
 		chatId: chatId,
+		wakeCh: make(chan struct{}, 1),
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -49,6 +51,9 @@ func (e *streamEditor) loop() {
 	var lastSent string
 	for {
 		select {
+		case <-e.wakeCh:
+			// First content arrived — post the placeholder right away.
+			e.flush(&lastSent)
 		case <-ticker.C:
 			e.flush(&lastSent)
 		case <-e.stopCh:
@@ -92,8 +97,15 @@ func (e *streamEditor) flush(lastSent *string) {
 // update is the callback handed to ai.AskStream.
 func (e *streamEditor) update(content string) {
 	e.mu.Lock()
+	wasEmpty := e.latest == ""
 	e.latest = content
 	e.mu.Unlock()
+	if wasEmpty && content != "" {
+		select {
+		case e.wakeCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // stop halts the edit ticker and waits for the loop to exit.

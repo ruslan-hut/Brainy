@@ -180,16 +180,32 @@ func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(conten
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
 		stream := c.client.Chat.Completions.NewStreaming(ctx, params)
 		acc := openai.ChatCompletionAccumulator{}
+		started := time.Now()
+		var firstChunk, firstContent time.Time
+		var contentChunks int
 		for stream.Next() {
 			chunk := stream.Current()
+			if firstChunk.IsZero() {
+				firstChunk = time.Now()
+			}
 			acc.AddChunk(chunk)
 			if content, ok := acc.JustFinishedContent(); ok {
 				text = content
 			} else if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+				if firstContent.IsZero() {
+					firstContent = time.Now()
+				}
+				contentChunks++
 				text += chunk.Choices[0].Delta.Content
 				onDelta(text)
 			}
 		}
+		c.log.With(
+			slog.Int64("user", userId),
+			slog.Duration("ttfc", firstChunk.Sub(started)),
+			slog.Duration("ttfcontent", firstContent.Sub(started)),
+			slog.Int("content_chunks", contentChunks),
+		).Debug("stream timing")
 		if err := stream.Err(); err != nil {
 			return core.Response{}, fmt.Errorf("chat completion stream: %w", err)
 		}
