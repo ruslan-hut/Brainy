@@ -88,21 +88,56 @@ func (t *TgBot) Start() error {
 			}
 
 			if incoming.IsCommand() {
-				if incoming.Command() == "help" {
+				switch incoming.Command() {
+				case "help":
 					text := "You can use the following commands:\n"
 					text += "/help - show this help\n"
 					text += "/hello - bot says random fact\n"
 					text += "/topic - set a subject of conversation\n"
 					text += "/ask - ask something or just reply on previous bot message\n"
+					text += "/cat - Catalan-English dictionary lookup\n"
+					text += "/cas - Spanish-English dictionary lookup\n"
 					text += "/imagine - generate an image from description\n"
 					text += "/clear - clear bot memory to begin new topic\n"
 					t.plainResponse(chat.ID, text)
 					continue
-				}
-				if incoming.Command() == "ask" {
-					question = strings.TrimPrefix(question, "/ask")
-				}
-				if incoming.Command() == "imagine" {
+				case "ask":
+					stripped := strings.TrimSpace(strings.TrimPrefix(question, "/ask"))
+					if stripped == "" {
+						t.plainResponse(chat.ID, "Please provide a question. Example: /ask what is the capital of France?")
+						continue
+					}
+					go t.sendOneShot(chat.ID, stripped)
+					continue
+				case "cat":
+					word := strings.TrimSpace(strings.TrimPrefix(question, "/cat"))
+					if word == "" {
+						t.plainResponse(chat.ID, "Please provide a word. Example: /cat poma")
+						continue
+					}
+					go t.sendTranslate(chat.ID, "Catalan", word)
+					continue
+				case "cas":
+					word := strings.TrimSpace(strings.TrimPrefix(question, "/cas"))
+					if word == "" {
+						t.plainResponse(chat.ID, "Please provide a word. Example: /cas manzana")
+						continue
+					}
+					go t.sendTranslate(chat.ID, "Spanish", word)
+					continue
+				case "hello":
+					go t.sendOneShot(chat.ID, "Answer in Ukrainian: Say one random fact from science.")
+					continue
+				case "topic":
+					topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
+					if topic == "" {
+						t.plainResponse(chat.ID, "Please provide a subject. Example: /topic astronomy")
+						continue
+					}
+					t.chat.SetTopic(chat.ID, topic)
+					t.plainResponse(chat.ID, "Let's talk about "+topic+".")
+					continue
+				case "imagine":
 					imagePrompt := strings.TrimSpace(strings.TrimPrefix(question, "/imagine"))
 					if imagePrompt == "" {
 						t.plainResponse(chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
@@ -110,8 +145,7 @@ func (t *TgBot) Start() error {
 					}
 					go t.SendImageResponse(chat.ID, imagePrompt)
 					continue
-				}
-				if incoming.Command() == "clear" {
+				case "clear":
 					t.log.With(
 						slog.String("user", chat.UserName),
 						slog.Int64("id", chat.ID),
@@ -170,102 +204,85 @@ func (t *TgBot) sendRandomEmoji(chatId int64) {
 	}
 }
 
-func (t *TgBot) composeReply(chatId int64, request string) string {
-	// Get the response from the chat service
-	response, err := t.chat.GetResponse(chatId, request)
-	if err != nil {
-		t.log.With(
-			slog.Int64("id", chatId),
-		).Error("composing reply", sl.Err(err))
-		response = errorResponse
-	}
-	return response
+func (t *TgBot) SendResponse(chatId int64, request string) {
+	t.withTyping(chatId, func() {
+		resp, err := t.chat.Ask(chatId, request)
+		if err != nil {
+			t.log.With(slog.Int64("id", chatId)).Error("composing reply", sl.Err(err))
+			t.plainResponse(chatId, errorResponse)
+			return
+		}
+		if resp.ImagePrompt != "" {
+			t.log.With(
+				slog.Int64("id", chatId),
+				slog.String("prompt", resp.ImagePrompt),
+			).Info("detected image generation intent")
+			t.generateAndSendImage(chatId, resp.ImagePrompt)
+			return
+		}
+		t.plainResponse(chatId, resp.Text)
+	})
 }
 
-func (t *TgBot) SendResponse(chatId int64, request string) {
-	// First, detect if user wants to generate an image
-	wantsImage, imagePrompt := t.chat.DetectImageIntent(request)
-	if wantsImage && imagePrompt != "" {
-		t.log.With(
-			slog.Int64("id", chatId),
-			slog.String("prompt", imagePrompt),
-		).Info("detected image generation intent")
-		t.SendImageResponse(chatId, imagePrompt)
-		return
-	}
+func (t *TgBot) sendOneShot(chatId int64, prompt string) {
+	t.withTyping(chatId, func() {
+		text, err := t.chat.OneShot(prompt)
+		if err != nil {
+			t.log.With(slog.Int64("id", chatId)).Error("one-shot reply", sl.Err(err))
+			t.plainResponse(chatId, errorResponse)
+			return
+		}
+		t.plainResponse(chatId, text)
+	})
+}
 
-	stopTicker := make(chan bool)
-	replyReady := make(chan string)
+func (t *TgBot) sendTranslate(chatId int64, language, word string) {
+	t.withTyping(chatId, func() {
+		text, err := t.chat.Translate(language, word)
+		if err != nil {
+			t.log.With(slog.Int64("id", chatId)).Error("translate reply", sl.Err(err))
+			t.plainResponse(chatId, errorResponse)
+			return
+		}
+		t.plainResponse(chatId, text)
+	})
+}
 
+// withTyping shows a typing indicator while fn runs.
+func (t *TgBot) withTyping(chatId int64, fn func()) {
+	stop := make(chan struct{})
 	t.sendChatAction(chatId, "typing")
-
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ticker.C:
 				t.sendChatAction(chatId, "typing")
-			case <-stopTicker:
+			case <-stop:
 				return
 			}
 		}
 	}()
-
-	go func() {
-		reply := t.composeReply(chatId, request)
-		replyReady <- reply
-	}()
-
-	reply := <-replyReady
-	stopTicker <- true
-
-	t.plainResponse(chatId, reply)
+	defer close(stop)
+	fn()
 }
 
 // SendImageResponse generates and sends an image
 func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
-	stopTicker := make(chan bool)
-	imageReady := make(chan string)
-	errorChan := make(chan error)
+	t.withTyping(chatId, func() {
+		t.generateAndSendImage(chatId, prompt)
+	})
+}
 
-	t.sendChatAction(chatId, "typing")
-
-	go func() {
-		ticker := time.NewTicker(4 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				t.sendChatAction(chatId, "typing")
-			case <-stopTicker:
-				return
-			}
-		}
-	}()
-
-	go func() {
-		imageURL, err := t.chat.GenerateImage(chatId, prompt)
-		if err != nil {
-			errorChan <- err
-			return
-		}
-		imageReady <- imageURL
-	}()
-
-	select {
-	case imageURL := <-imageReady:
-		stopTicker <- true
-		t.sendImage(chatId, imageURL)
-	case err := <-errorChan:
-		stopTicker <- true
-		t.log.With(
-			slog.Int64("id", chatId),
-		).Error("generating image", sl.Err(err))
+func (t *TgBot) generateAndSendImage(chatId int64, prompt string) {
+	imageURL, err := t.chat.GenerateImage(chatId, prompt)
+	if err != nil {
+		t.log.With(slog.Int64("id", chatId)).Error("generating image", sl.Err(err))
 		t.plainResponse(chatId, "Sorry, I couldn't generate the image. Please try again with a different description.")
+		return
 	}
+	t.sendImage(chatId, imageURL)
 }
 
 func (t *TgBot) sendImage(chatId int64, imageURL string) {

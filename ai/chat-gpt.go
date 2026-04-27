@@ -17,12 +17,15 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
+const imageToolName = "generate_image"
+
 type ChatGPT struct {
 	conf           *core.Config
 	log            *slog.Logger
 	contextManager *holder.ContextManager
 	client         openai.Client
 	prefsAnalyzer  *PreferencesAnalyzer
+	tools          []openai.ChatCompletionToolUnionParam
 }
 
 func NewChat(conf *core.Config, log *slog.Logger, store storage.ContextStorage) *ChatGPT {
@@ -31,6 +34,27 @@ func NewChat(conf *core.Config, log *slog.Logger, store storage.ContextStorage) 
 		log:            log.With(sl.Module("chat-gpt")),
 		contextManager: holder.NewContextManager(store),
 		client:         openai.NewClient(option.WithAPIKey(conf.OpenAIApiKey)),
+		tools:          buildTools(),
+	}
+}
+
+func buildTools() []openai.ChatCompletionToolUnionParam {
+	return []openai.ChatCompletionToolUnionParam{
+		openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+			Name:        imageToolName,
+			Description: openai.String("Call this when the user explicitly asks to create, generate, draw, paint, design, or visualize an image, picture, photo, or illustration. Do not call it for questions about images or general conversation."),
+			Parameters: shared.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": map[string]any{
+						"type":        "string",
+						"description": "Detailed image generation prompt suitable for an image model, derived from the user's request.",
+					},
+				},
+				"required":             []string{"prompt"},
+				"additionalProperties": false,
+			},
+		}),
 	}
 }
 
@@ -39,7 +63,14 @@ func (c *ChatGPT) Close() error {
 }
 
 func (c *ChatGPT) ClearContext(userId int64) {
+	if c.prefsAnalyzer != nil {
+		c.prefsAnalyzer.TriggerAnalysisAsync(userId)
+	}
 	c.contextManager.ClearUserContext(userId)
+}
+
+func (c *ChatGPT) SetTopic(userId int64, topic string) {
+	c.contextManager.SetTopic(userId, topic)
 }
 
 // SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
@@ -47,17 +78,14 @@ func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
 	c.prefsAnalyzer = pa
 }
 
-// GenerateImage generates an image using the configured image model.
-// Returns a URL (dall-e-2 / dall-e-3 only). gpt-image-* models are b64-only
-// and not supported by this entry point yet.
+// GenerateImage generates an image using the configured image model and returns the URL.
+// Only dall-e-2 / dall-e-3 are supported; gpt-image-* is b64-only.
 func (c *ChatGPT) GenerateImage(userId int64, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	styled := prompt + c.conf.ImageStyle
-
 	resp, err := c.client.Images.Generate(ctx, openai.ImageGenerateParams{
-		Prompt:         styled,
+		Prompt:         prompt + c.conf.ImageStyle,
 		Model:          openai.ImageModel(c.conf.ImageModel),
 		Size:           openai.ImageGenerateParamsSize(c.conf.ImageSize),
 		ResponseFormat: openai.ImageGenerateParamsResponseFormatURL,
@@ -79,71 +107,55 @@ func (c *ChatGPT) GenerateImage(userId int64, prompt string) (string, error) {
 	return resp.Data[0].URL, nil
 }
 
-// DetectImageIntent uses GPT to detect if the user wants to generate an image.
-func (c *ChatGPT) DetectImageIntent(question string) (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	prompt := `Analyze the following user message and determine if they want to generate/create an image.
-Respond in JSON format only: {"wants_image": true/false, "image_prompt": "optimized prompt for DALL-E if wants_image is true, otherwise empty string"}
-
-Rules for detection:
-- "wants_image" should be true if user explicitly asks to create, generate, draw, paint, make, design, or visualize an image/picture/photo/illustration
-- "wants_image" should be true if user asks for visual content like "show me", "I want to see", "create a picture of"
-- "wants_image" should be false for questions about images, image editing, or general conversation
-- If wants_image is true, create an optimized detailed prompt for DALL-E image generation based on user's request
-
-User message: ` + question
-
-	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:    openai.ChatModel(c.conf.Model),
-		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
-		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
-		},
-	})
-	if err != nil || len(completion.Choices) == 0 {
-		return false, ""
-	}
-
-	type intentResponse struct {
-		WantsImage  bool   `json:"wants_image"`
-		ImagePrompt string `json:"image_prompt"`
-	}
-	var ir intentResponse
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &ir); err != nil {
-		c.log.With(slog.String("response", completion.Choices[0].Message.Content)).Debug("failed to parse intent response")
-		return false, ""
-	}
-	return ir.WantsImage, ir.ImagePrompt
-}
-
-func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
+// Ask runs a conversational turn with full history and tools.
+// On image-intent tool call, returns Response{ImagePrompt:...} without
+// touching conversation history.
+func (c *ChatGPT) Ask(userId int64, question string) (core.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	messages, ok := c.composeMessages(userId, question)
-	if !ok {
-		// Slash command was fully handled locally (e.g. /clear, /topic).
-		return c.localResponse(userId, question), nil
+	if c.prefsAnalyzer != nil {
+		c.prefsAnalyzer.UpdateLastMessageTime(userId)
 	}
+
+	messages := c.buildMessages(userId, question)
 
 	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(c.conf.Model),
 		Messages: messages,
+		Tools:    c.tools,
 	})
 	if err != nil {
-		return "", fmt.Errorf("chat completion: %w", err)
+		return core.Response{}, fmt.Errorf("chat completion: %w", err)
 	}
 	if len(completion.Choices) == 0 {
-		return "", fmt.Errorf("chat completion: empty choices")
+		return core.Response{}, fmt.Errorf("chat completion: empty choices")
 	}
 
-	response := completion.Choices[0].Message.Content
+	msg := completion.Choices[0].Message
 
-	c.contextManager.UpdateUserContext(userId, holder.Message{Text: response, IsUser: false})
+	for _, tc := range msg.ToolCalls {
+		if tc.Type != "function" || tc.Function.Name != imageToolName {
+			continue
+		}
+		var args struct {
+			Prompt string `json:"prompt"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil || args.Prompt == "" {
+			continue
+		}
+		c.log.With(
+			slog.Int64("user", userId),
+			slog.String("prompt", args.Prompt),
+		).Info("image intent")
+		return core.Response{ImagePrompt: args.Prompt}, nil
+	}
 
-	logText := response
+	text := msg.Content
+	c.contextManager.UpdateUserContext(userId, holder.Message{Text: question, IsUser: true})
+	c.contextManager.UpdateUserContext(userId, holder.Message{Text: text, IsUser: false})
+
+	logText := text
 	if len(logText) > 50 {
 		logText = logText[:50] + "..."
 	}
@@ -154,37 +166,40 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 		slog.String("text", logText),
 	).Info("outgoing message")
 
-	return response, nil
+	return core.Response{Text: text}, nil
 }
 
-// composeMessages builds the message array sent to the model.
-// Returns ok=false when the command was handled locally and no API call is needed.
-func (c *ChatGPT) composeMessages(userId int64, question string) ([]openai.ChatCompletionMessageParamUnion, bool) {
-	// Single-shot commands (no history, no context update).
-	if shot, isShot := c.singleShotCommand(question); isShot {
-		return []openai.ChatCompletionMessageParamUnion{openai.UserMessage(shot)}, true
+// OneShot runs a single-message completion with no history, no tools, no preferences.
+func (c *ChatGPT) OneShot(prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(c.conf.Model),
+		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
+	})
+	if err != nil {
+		return "", fmt.Errorf("chat completion: %w", err)
 	}
-
-	// Locally-handled commands.
-	if strings.HasPrefix(question, "/clear") || strings.HasPrefix(question, "/topic") {
-		return nil, false
+	if len(completion.Choices) == 0 {
+		return "", fmt.Errorf("chat completion: empty choices")
 	}
+	return completion.Choices[0].Message.Content, nil
+}
 
-	// Track user message time for preferences analysis.
-	if c.prefsAnalyzer != nil {
-		c.prefsAnalyzer.UpdateLastMessageTime(userId)
-	}
+// Translate returns a dictionary-style translation for a single word.
+func (c *ChatGPT) Translate(language, word string) (string, error) {
+	return c.OneShot(languageTranslatePrompt(language) + word)
+}
 
-	c.contextManager.UpdateUserContext(userId, holder.Message{Text: question, IsUser: true})
-
+func (c *ChatGPT) buildMessages(userId int64, question string) []openai.ChatCompletionMessageParamUnion {
 	var msgs []openai.ChatCompletionMessageParamUnion
 
 	if sys := c.systemPrompt(userId); sys != "" {
 		msgs = append(msgs, openai.SystemMessage(sys))
 	}
 
-	dialog := c.contextManager.GetUserContext(userId)
-	if dialog != nil {
+	if dialog := c.contextManager.GetUserContext(userId); dialog != nil {
 		c.log.With(
 			slog.Int64("user", userId),
 			slog.Int("tokens", dialog.Tokens),
@@ -196,41 +211,10 @@ func (c *ChatGPT) composeMessages(userId int64, question string) ([]openai.ChatC
 				msgs = append(msgs, openai.AssistantMessage(m.Text))
 			}
 		}
-	} else {
-		msgs = append(msgs, openai.UserMessage(question))
 	}
 
-	return msgs, true
-}
-
-func (c *ChatGPT) singleShotCommand(question string) (string, bool) {
-	switch {
-	case strings.HasPrefix(question, "/ask "):
-		return strings.TrimPrefix(question, "/ask "), true
-	case strings.HasPrefix(question, "/cat "):
-		return LanguageTranslatePrompt("Catalan") + strings.TrimPrefix(question, "/cat "), true
-	case strings.HasPrefix(question, "/cas "):
-		return LanguageTranslatePrompt("Spanish") + strings.TrimPrefix(question, "/cas "), true
-	case strings.HasPrefix(question, "/hello"):
-		return "Answer in Ukrainian: Say one random fact from science.", true
-	}
-	return "", false
-}
-
-func (c *ChatGPT) localResponse(userId int64, question string) string {
-	if strings.HasPrefix(question, "/clear") {
-		if c.prefsAnalyzer != nil {
-			c.prefsAnalyzer.TriggerAnalysisAsync(userId)
-		}
-		c.contextManager.ClearUserContext(userId)
-		return "Let's talk."
-	}
-	if strings.HasPrefix(question, "/topic") {
-		topic := strings.TrimPrefix(question, "/topic ")
-		c.contextManager.SetTopic(userId, topic)
-		return "Let's talk about " + topic + "."
-	}
-	return ""
+	msgs = append(msgs, openai.UserMessage(question))
+	return msgs
 }
 
 func (c *ChatGPT) systemPrompt(userId int64) string {
@@ -242,15 +226,14 @@ func (c *ChatGPT) systemPrompt(userId int64) string {
 		}
 	}
 
-	dialog := c.contextManager.GetUserContext(userId)
-	if dialog != nil && dialog.Topic != "" {
+	if dialog := c.contextManager.GetUserContext(userId); dialog != nil && dialog.Topic != "" {
 		parts = append(parts, "Current subject: "+dialog.Topic)
 	}
 
 	return strings.Join(parts, "\n\n")
 }
 
-func LanguageTranslatePrompt(language string) string {
+func languageTranslatePrompt(language string) string {
 	p := "Act as a " + language + "-English dictionary. Give response like an Dictionary article. Add the following information: "
 	p += "[ transcription ] "
 	p += "- gender, empty if not applicable "
