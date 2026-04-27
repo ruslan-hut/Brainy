@@ -13,6 +13,9 @@ type Config struct {
 	OpenAIApiKey   string `yaml:"openai_api_key" env-default:""`
 	Username       string `yaml:"username" env-default:""`
 	Model          string `yaml:"model" env-default:"gpt-4.1-mini"`
+	ImageModel     string `yaml:"image_model" env-default:"dall-e-3"`
+	ImageSize      string `yaml:"image_size" env-default:"1024x1024"`
+	ImageStyle     string `yaml:"image_style" env-default:". Style: cartoon animation like Futurama TV series, bold outlines, vibrant colors, Matt Groening art style"`
 	Mongo          struct {
 		Enabled  bool   `yaml:"enabled" env-default:"false"`
 		Host     string `yaml:"host" env-default:"127.0.0.1"`

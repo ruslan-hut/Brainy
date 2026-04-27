@@ -8,18 +8,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 type ChatGPT struct {
 	conf           *core.Config
 	log            *slog.Logger
 	contextManager *holder.ContextManager
-	httpClient     *http.Client
+	client         openai.Client
 	prefsAnalyzer  *PreferencesAnalyzer
 }
 
@@ -28,9 +30,7 @@ func NewChat(conf *core.Config, log *slog.Logger, store storage.ContextStorage) 
 		conf:           conf,
 		log:            log.With(sl.Module("chat-gpt")),
 		contextManager: holder.NewContextManager(store),
-		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		client:         openai.NewClient(option.WithAPIKey(conf.OpenAIApiKey)),
 	}
 }
 
@@ -42,80 +42,49 @@ func (c *ChatGPT) ClearContext(userId int64) {
 	c.contextManager.ClearUserContext(userId)
 }
 
-// GenerateImage generates an image using DALL-E API
+// SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
+func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
+	c.prefsAnalyzer = pa
+}
+
+// GenerateImage generates an image using the configured image model.
+// Returns a URL (dall-e-2 / dall-e-3 only). gpt-image-* models are b64-only
+// and not supported by this entry point yet.
 func (c *ChatGPT) GenerateImage(userId int64, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// Apply Futurama cartoon style to all generated images
-	styledPrompt := prompt + ". Style: cartoon animation like Futurama TV series, bold outlines, vibrant colors, Matt Groening art style"
+	styled := prompt + c.conf.ImageStyle
 
-	request := NewImageRequest(styledPrompt)
-	jsonBytes, err := json.Marshal(request)
+	resp, err := c.client.Images.Generate(ctx, openai.ImageGenerateParams{
+		Prompt:         styled,
+		Model:          openai.ImageModel(c.conf.ImageModel),
+		Size:           openai.ImageGenerateParamsSize(c.conf.ImageSize),
+		ResponseFormat: openai.ImageGenerateParamsResponseFormatURL,
+		N:              openai.Int(1),
+	})
 	if err != nil {
-		return "", fmt.Errorf("error marshalling image request: %v", err)
+		c.log.With(slog.Int64("user", userId)).Error("image generation", sl.Err(err))
+		return "", fmt.Errorf("image generation: %w", err)
 	}
-	requestBody := strings.NewReader(string(jsonBytes))
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/images/generations", requestBody)
-	if err != nil {
-		return "", fmt.Errorf("making image request: %v", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.conf.OpenAIApiKey))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("getting image response: %v", err)
-	}
-
-	defer func(Body io.ReadCloser) {
-		err = Body.Close()
-		if err != nil {
-			c.log.Error("closing image response body", sl.Err(err))
-		}
-	}(resp.Body)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading image response body: %v", err)
-	}
-
-	var imageResponse ImageGenerationResponse
-	err = json.Unmarshal(body, &imageResponse)
-	if err != nil {
-		return "", fmt.Errorf("decoding image response: %v", err)
-	}
-
-	if imageResponse.Error != nil {
-		c.log.With(
-			slog.Int64("user", userId),
-			slog.String("code", imageResponse.Error.Code),
-			slog.String("message", imageResponse.Error.Message),
-		).Error("image generation error")
-		return "", fmt.Errorf("image generation: %s", imageResponse.Error.Message)
-	}
-
-	if len(imageResponse.Data) == 0 {
+	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
 		return "", fmt.Errorf("image generation: empty response")
 	}
 
-	imageURL := imageResponse.Data[0].URL
 	c.log.With(
 		slog.Int64("user", userId),
 		slog.String("prompt", prompt),
 	).Info("image generated")
 
-	return imageURL, nil
+	return resp.Data[0].URL, nil
 }
 
-// DetectImageIntent uses GPT to detect if user wants to generate an image
+// DetectImageIntent uses GPT to detect if the user wants to generate an image.
 func (c *ChatGPT) DetectImageIntent(question string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	detectPrompt := `Analyze the following user message and determine if they want to generate/create an image.
+	prompt := `Analyze the following user message and determine if they want to generate/create an image.
 Respond in JSON format only: {"wants_image": true/false, "image_prompt": "optimized prompt for DALL-E if wants_image is true, otherwise empty string"}
 
 Rules for detection:
@@ -126,142 +95,53 @@ Rules for detection:
 
 User message: ` + question
 
-	request := NewRequest(detectPrompt, c.conf.Model)
-	jsonBytes, err := json.Marshal(request)
-	if err != nil {
-		return false, ""
-	}
-	requestBody := strings.NewReader(string(jsonBytes))
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", requestBody)
-	if err != nil {
-		return false, ""
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.conf.OpenAIApiKey))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return false, ""
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
+	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(c.conf.Model),
+		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
+		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
+		},
+	})
+	if err != nil || len(completion.Choices) == 0 {
 		return false, ""
 	}
 
-	var chatCompletion ChatCompletion
-	err = json.Unmarshal(body, &chatCompletion)
-	if err != nil || len(chatCompletion.Choices) == 0 {
-		return false, ""
-	}
-
-	// Parse the JSON response
-	type IntentResponse struct {
+	type intentResponse struct {
 		WantsImage  bool   `json:"wants_image"`
 		ImagePrompt string `json:"image_prompt"`
 	}
-
-	var intentResp IntentResponse
-	responseText := chatCompletion.Choices[0].Message.Content
-	// Try to extract JSON from the response
-	responseText = strings.TrimSpace(responseText)
-	if strings.HasPrefix(responseText, "```json") {
-		responseText = strings.TrimPrefix(responseText, "```json")
-		responseText = strings.TrimSuffix(responseText, "```")
-	}
-	responseText = strings.TrimSpace(responseText)
-
-	err = json.Unmarshal([]byte(responseText), &intentResp)
-	if err != nil {
-		c.log.With(slog.String("response", responseText)).Debug("failed to parse intent response")
+	var ir intentResponse
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &ir); err != nil {
+		c.log.With(slog.String("response", completion.Choices[0].Message.Content)).Debug("failed to parse intent response")
 		return false, ""
 	}
-
-	return intentResp.WantsImage, intentResp.ImagePrompt
-}
-
-// SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
-func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
-	c.prefsAnalyzer = pa
+	return ir.WantsImage, ir.ImagePrompt
 }
 
 func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	prompt := c.composePrompt(userId, question)
+	messages, ok := c.composeMessages(userId, question)
+	if !ok {
+		// Slash command was fully handled locally (e.g. /clear, /topic).
+		return c.localResponse(userId, question), nil
+	}
 
-	request := NewRequest(prompt, c.conf.Model)
-	jsonBytes, err := json.Marshal(request)
+	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(c.conf.Model),
+		Messages: messages,
+	})
 	if err != nil {
-		return "", fmt.Errorf("error marshalling request: %v", err)
+		return "", fmt.Errorf("chat completion: %w", err)
 	}
-	requestBody := strings.NewReader(string(jsonBytes))
-
-	// Create a new request with the ChatGPT API URL
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", requestBody)
-	if err != nil {
-		return "", fmt.Errorf("making request: %v", err)
-	}
-
-	// Add the Authorization header with your ChatGPT API key
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.conf.OpenAIApiKey))
-	req.Header.Set("Content-Type", "application/json")
-
-	// Send the request and get the response
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("getting response: %v", err)
-	}
-
-	// Read the response body
-	defer func(Body io.ReadCloser) {
-		err = Body.Close()
-		if err != nil {
-			c.log.Error("closing response body", sl.Err(err))
-		}
-	}(resp.Body)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading response body: %v", err)
-	}
-	//c.log.With(
-	//	slog.Int64("user", userId),
-	//	slog.String("body", string(body)),
-	//).Debug("response body")
-
-	// Parse the response JSON to get the generated text
-	// Here you'll need to adjust the code to parse the JSON response from ChatGPT and extract the generated text
-	var chatCompletion ChatCompletion
-	err = json.Unmarshal(body, &chatCompletion)
-	if err != nil {
-		return "", fmt.Errorf("decoding response: %v", err)
-	}
-	if chatCompletion.Error != nil {
-		if chatCompletion.Error.Code != "" {
-			c.log.With(
-				slog.Int64("user", userId),
-				slog.String("code", chatCompletion.Error.Code),
-				slog.String("message", chatCompletion.Error.Message),
-			).Error("chat completion error")
-			return "", fmt.Errorf("chat completion: %s", chatCompletion.Error.Code)
-		}
-	}
-	if len(chatCompletion.Choices) == 0 {
+	if len(completion.Choices) == 0 {
 		return "", fmt.Errorf("chat completion: empty choices")
 	}
-	response := chatCompletion.Choices[0].Message.Content
 
-	// add bot message to context
-	msg := holder.Message{
-		Text:   response,
-		IsUser: false,
-	}
-	c.contextManager.UpdateUserContext(userId, msg)
+	response := completion.Choices[0].Message.Content
+
+	c.contextManager.UpdateUserContext(userId, holder.Message{Text: response, IsUser: false})
 
 	logText := response
 	if len(logText) > 50 {
@@ -269,122 +149,122 @@ func (c *ChatGPT) GetResponse(userId int64, question string) (string, error) {
 	}
 	c.log.With(
 		slog.Int64("user", userId),
+		slog.Int64("prompt_tokens", completion.Usage.PromptTokens),
+		slog.Int64("completion_tokens", completion.Usage.CompletionTokens),
 		slog.String("text", logText),
 	).Info("outgoing message")
 
 	return response, nil
 }
 
-// compose prompt for openai
-func (c *ChatGPT) composePrompt(userId int64, question string) string {
-
-	if strings.HasPrefix(question, "/ask ") {
-		// Send the text after the "/ask " command to the ChatGPT API
-		return strings.TrimPrefix(question, "/ask ")
+// composeMessages builds the message array sent to the model.
+// Returns ok=false when the command was handled locally and no API call is needed.
+func (c *ChatGPT) composeMessages(userId int64, question string) ([]openai.ChatCompletionMessageParamUnion, bool) {
+	// Single-shot commands (no history, no context update).
+	if shot, isShot := c.singleShotCommand(question); isShot {
+		return []openai.ChatCompletionMessageParamUnion{openai.UserMessage(shot)}, true
 	}
 
-	if strings.HasPrefix(question, "/cat ") {
-		word := strings.TrimPrefix(question, "/cat ")
-		p := LanguageTranslatePrompt("Catalan")
-		return p + word
+	// Locally-handled commands.
+	if strings.HasPrefix(question, "/clear") || strings.HasPrefix(question, "/topic") {
+		return nil, false
 	}
 
-	if strings.HasPrefix(question, "/cas ") {
-		word := strings.TrimPrefix(question, "/cas ")
-		p := LanguageTranslatePrompt("Spanish")
-		return p + word
+	// Track user message time for preferences analysis.
+	if c.prefsAnalyzer != nil {
+		c.prefsAnalyzer.UpdateLastMessageTime(userId)
 	}
 
-	if strings.HasPrefix(question, "/hello") {
-		return "Answer in Ukrainian: Say one random fact from science."
+	c.contextManager.UpdateUserContext(userId, holder.Message{Text: question, IsUser: true})
+
+	var msgs []openai.ChatCompletionMessageParamUnion
+
+	if sys := c.systemPrompt(userId); sys != "" {
+		msgs = append(msgs, openai.SystemMessage(sys))
 	}
 
+	dialog := c.contextManager.GetUserContext(userId)
+	if dialog != nil {
+		c.log.With(
+			slog.Int64("user", userId),
+			slog.Int("tokens", dialog.Tokens),
+		).Info("user context")
+		for _, m := range dialog.Messages {
+			if m.IsUser {
+				msgs = append(msgs, openai.UserMessage(m.Text))
+			} else {
+				msgs = append(msgs, openai.AssistantMessage(m.Text))
+			}
+		}
+	} else {
+		msgs = append(msgs, openai.UserMessage(question))
+	}
+
+	return msgs, true
+}
+
+func (c *ChatGPT) singleShotCommand(question string) (string, bool) {
+	switch {
+	case strings.HasPrefix(question, "/ask "):
+		return strings.TrimPrefix(question, "/ask "), true
+	case strings.HasPrefix(question, "/cat "):
+		return LanguageTranslatePrompt("Catalan") + strings.TrimPrefix(question, "/cat "), true
+	case strings.HasPrefix(question, "/cas "):
+		return LanguageTranslatePrompt("Spanish") + strings.TrimPrefix(question, "/cas "), true
+	case strings.HasPrefix(question, "/hello"):
+		return "Answer in Ukrainian: Say one random fact from science.", true
+	}
+	return "", false
+}
+
+func (c *ChatGPT) localResponse(userId int64, question string) string {
 	if strings.HasPrefix(question, "/clear") {
-		// Trigger analysis before clearing context (if analyzer is set)
 		if c.prefsAnalyzer != nil {
 			c.prefsAnalyzer.TriggerAnalysisAsync(userId)
 		}
 		c.contextManager.ClearUserContext(userId)
 		return "Let's talk."
 	}
-
 	if strings.HasPrefix(question, "/topic") {
 		topic := strings.TrimPrefix(question, "/topic ")
 		c.contextManager.SetTopic(userId, topic)
 		return "Let's talk about " + topic + "."
 	}
+	return ""
+}
 
-	// Track user message time for preferences analysis
+func (c *ChatGPT) systemPrompt(userId int64) string {
+	var parts []string
+
 	if c.prefsAnalyzer != nil {
-		c.prefsAnalyzer.UpdateLastMessageTime(userId)
+		if prefs := c.prefsAnalyzer.GetUserPreferences(userId); prefs != nil {
+			parts = append(parts, c.buildPreferencesPrompt(prefs))
+		}
 	}
 
-	// add user message to context
-	msg := holder.Message{
-		Text:   question,
-		IsUser: true,
-	}
-	c.contextManager.UpdateUserContext(userId, msg)
-
-	t := c.getContext(userId)
-	if t != "" {
-		question = t + "\nMy next question is:\n" + question
+	dialog := c.contextManager.GetUserContext(userId)
+	if dialog != nil && dialog.Topic != "" {
+		parts = append(parts, "Current subject: "+dialog.Topic)
 	}
 
-	return question
+	return strings.Join(parts, "\n\n")
 }
 
 func LanguageTranslatePrompt(language string) string {
 	p := "Act as a " + language + "-English dictionary. Give response like an Dictionary article. Add the following information: "
-	p = p + "[ transcription ] "
-	p = p + "- gender, empty if not applicable "
-	p = p + "- grammar form, empty if not applicable "
-	p = p + "- translation "
-	p = p + "- examples of use "
-	p = p + "- for verbs add: conjugation in present, past and future. "
-	p = p + "Here is the word to translate: "
+	p += "[ transcription ] "
+	p += "- gender, empty if not applicable "
+	p += "- grammar form, empty if not applicable "
+	p += "- translation "
+	p += "- examples of use "
+	p += "- for verbs add: conjugation in present, past and future. "
+	p += "Here is the word to translate: "
 	return p
-}
-
-func (c *ChatGPT) getContext(userId int64) string {
-	t := ""
-
-	// Inject user preferences if available
-	if c.prefsAnalyzer != nil {
-		if prefs := c.prefsAnalyzer.GetUserPreferences(userId); prefs != nil {
-			t = c.buildPreferencesPrompt(prefs)
-		}
-	}
-
-	dialogContext := c.contextManager.GetUserContext(userId)
-	if dialogContext != nil {
-		c.log.With(
-			slog.Int64("user", userId),
-			slog.Int("tokens", dialogContext.Tokens),
-		).Info("user context")
-		if dialogContext.Topic != "" {
-			if t != "" {
-				t += "\n"
-			}
-			t += "Subject: " + dialogContext.Topic
-		}
-		t += "\nPrevious messages of you as Assistant and me as User: "
-		for _, message := range dialogContext.Messages {
-			person := "Assistant"
-			if message.IsUser {
-				person = "User"
-			}
-			t += fmt.Sprintf("\n%s: %s", person, message.Text)
-		}
-	}
-	return t
 }
 
 func (c *ChatGPT) buildPreferencesPrompt(prefs *storage.UserPreferences) string {
 	var parts []string
-
 	parts = append(parts, "User preferences (adapt your responses accordingly):")
-
 	if prefs.PreferredLanguage != "" {
 		parts = append(parts, fmt.Sprintf("- Preferred language: %s", prefs.PreferredLanguage))
 	}
@@ -406,6 +286,5 @@ func (c *ChatGPT) buildPreferencesPrompt(prefs *storage.UserPreferences) string 
 	if len(prefs.FavoriteTopics) > 0 {
 		parts = append(parts, fmt.Sprintf("- Interests: %s", strings.Join(prefs.FavoriteTopics, ", ")))
 	}
-
 	return strings.Join(parts, "\n")
 }
