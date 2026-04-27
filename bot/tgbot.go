@@ -12,6 +12,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
+const streamEditInterval = 900 * time.Millisecond
+
 var smileEmojis = []string{
 	"😊", "😄", "😁", "🙂", "😉", "🤗", "😇", "🥰", "😎", "🤔",
 	"👀", "🙈", "🤷", "👍", "✨", "🎉", "💫", "🌟", "🔥", "💯",
@@ -205,19 +207,28 @@ func (t *TgBot) sendRandomEmoji(chatId int64) {
 }
 
 func (t *TgBot) SendResponse(chatId int64, request string) {
-	t.withTyping(chatId, func() {
-		resp, err := t.chat.Ask(chatId, request)
-		if err != nil {
-			t.log.With(slog.Int64("id", chatId)).Error("composing reply", sl.Err(err))
-			t.plainResponse(chatId, errorResponse)
-			return
-		}
-		if resp.ImagePrompt != "" {
+	t.sendChatAction(chatId, "typing")
+
+	editor := newStreamEditor(t, chatId)
+	editor.start()
+
+	resp, err := t.chat.AskStream(chatId, request, editor.update)
+	editor.stop()
+
+	if err != nil {
+		t.log.With(slog.Int64("id", chatId)).Error("composing reply", sl.Err(err))
+		editor.deleteIfPosted()
+		t.plainResponse(chatId, errorResponse)
+		return
+	}
+	if resp.ImagePrompt != "" {
+		editor.deleteIfPosted()
+		t.withTyping(chatId, func() {
 			t.generateAndSendImage(chatId, resp.ImagePrompt)
-			return
-		}
-		t.plainResponse(chatId, resp.Text)
-	})
+		})
+		return
+	}
+	editor.finalize(resp.Text)
 }
 
 func (t *TgBot) sendOneShot(chatId int64, prompt string) {

@@ -125,59 +125,120 @@ func (c *ChatGPT) GenerateImage(userId int64, prompt string) ([]byte, error) {
 // On image-intent tool call, returns Response{ImagePrompt:...} without
 // touching conversation history.
 func (c *ChatGPT) Ask(userId int64, question string) (core.Response, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	return c.askInternal(userId, question, nil)
+}
+
+// AskStream is like Ask but reports incremental cumulative content via onDelta
+// as the model streams its reply. onDelta is not called when the model decides
+// to call a tool instead of producing text.
+func (c *ChatGPT) AskStream(userId int64, question string, onDelta func(content string)) (core.Response, error) {
+	return c.askInternal(userId, question, onDelta)
+}
+
+func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(content string)) (core.Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	if c.prefsAnalyzer != nil {
 		c.prefsAnalyzer.UpdateLastMessageTime(userId)
 	}
 
-	messages := c.buildMessages(userId, question)
-
-	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(c.conf.Model),
-		Messages: messages,
+		Messages: c.buildMessages(userId, question),
 		Tools:    c.tools,
-	})
-	if err != nil {
-		return core.Response{}, fmt.Errorf("chat completion: %w", err)
-	}
-	if len(completion.Choices) == 0 {
-		return core.Response{}, fmt.Errorf("chat completion: empty choices")
 	}
 
-	msg := completion.Choices[0].Message
+	var (
+		text          string
+		toolCallName  string
+		toolCallArgs  string
+		promptTokens  int64
+		completionTok int64
+	)
 
-	for _, tc := range msg.ToolCalls {
-		if tc.Type != "function" || tc.Function.Name != imageToolName {
-			continue
+	if onDelta == nil {
+		completion, err := c.client.Chat.Completions.New(ctx, params)
+		if err != nil {
+			return core.Response{}, fmt.Errorf("chat completion: %w", err)
 		}
+		if len(completion.Choices) == 0 {
+			return core.Response{}, fmt.Errorf("chat completion: empty choices")
+		}
+		msg := completion.Choices[0].Message
+		text = msg.Content
+		for _, tc := range msg.ToolCalls {
+			if tc.Type == "function" {
+				toolCallName = tc.Function.Name
+				toolCallArgs = tc.Function.Arguments
+				break
+			}
+		}
+		promptTokens = completion.Usage.PromptTokens
+		completionTok = completion.Usage.CompletionTokens
+	} else {
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
+		stream := c.client.Chat.Completions.NewStreaming(ctx, params)
+		acc := openai.ChatCompletionAccumulator{}
+		for stream.Next() {
+			chunk := stream.Current()
+			acc.AddChunk(chunk)
+			if content, ok := acc.JustFinishedContent(); ok {
+				text = content
+			} else if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+				text += chunk.Choices[0].Delta.Content
+				onDelta(text)
+			}
+		}
+		if err := stream.Err(); err != nil {
+			return core.Response{}, fmt.Errorf("chat completion stream: %w", err)
+		}
+		if len(acc.Choices) > 0 {
+			for _, tc := range acc.Choices[0].Message.ToolCalls {
+				if tc.Type == "function" {
+					toolCallName = tc.Function.Name
+					toolCallArgs = tc.Function.Arguments
+					break
+				}
+			}
+			if text == "" {
+				text = acc.Choices[0].Message.Content
+			}
+		}
+		promptTokens = acc.Usage.PromptTokens
+		completionTok = acc.Usage.CompletionTokens
+	}
+
+	if toolCallName == imageToolName {
 		var args struct {
 			Prompt string `json:"prompt"`
 		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil || args.Prompt == "" {
-			continue
+		if err := json.Unmarshal([]byte(toolCallArgs), &args); err == nil && args.Prompt != "" {
+			c.log.With(
+				slog.Int64("user", userId),
+				slog.String("prompt", args.Prompt),
+			).Info("image intent")
+			return core.Response{ImagePrompt: args.Prompt}, nil
 		}
-		c.log.With(
-			slog.Int64("user", userId),
-			slog.String("prompt", args.Prompt),
-		).Info("image intent")
-		return core.Response{ImagePrompt: args.Prompt}, nil
 	}
 
-	text := msg.Content
 	c.contextManager.UpdateUserContext(userId, holder.Message{
 		Text:   question,
 		IsUser: true,
 		Tokens: tokens.Count(question),
 	})
+	completionTokens := int(completionTok)
+	if completionTokens == 0 {
+		completionTokens = tokens.Count(text)
+	}
 	c.contextManager.UpdateUserContext(userId, holder.Message{
 		Text:   text,
 		IsUser: false,
-		Tokens: int(completion.Usage.CompletionTokens),
+		Tokens: completionTokens,
 	})
-	// Reconcile cumulative count with API-reported usage.
-	c.contextManager.SetTokens(userId, int(completion.Usage.PromptTokens+completion.Usage.CompletionTokens))
+	if promptTokens > 0 {
+		c.contextManager.SetTokens(userId, int(promptTokens)+completionTokens)
+	}
 
 	logText := text
 	if len(logText) > 50 {
@@ -185,8 +246,8 @@ func (c *ChatGPT) Ask(userId int64, question string) (core.Response, error) {
 	}
 	c.log.With(
 		slog.Int64("user", userId),
-		slog.Int64("prompt_tokens", completion.Usage.PromptTokens),
-		slog.Int64("completion_tokens", completion.Usage.CompletionTokens),
+		slog.Int64("prompt_tokens", promptTokens),
+		slog.Int64("completion_tokens", completionTok),
 		slog.String("text", logText),
 	).Info("outgoing message")
 

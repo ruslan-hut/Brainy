@@ -9,6 +9,10 @@ type Response struct {
 
 type ChatService interface {
 	Ask(userId int64, text string) (Response, error)
+	// AskStream is like Ask but invokes onDelta with the cumulative response
+	// text every time the model emits a content chunk. onDelta is not called
+	// when the model returns a tool call instead of text.
+	AskStream(userId int64, text string, onDelta func(content string)) (Response, error)
 	OneShot(prompt string) (string, error)
 	Translate(language, word string) (string, error)
 	GenerateImage(userId int64, prompt string) ([]byte, error)
