@@ -89,6 +89,7 @@ var wizardSteps = []wizardStep{
 
 // wizardSession is a user's in-flight tuneup. Keyed by userID in the manager.
 type wizardSession struct {
+	ownerID   int64 // userID who started the wizard; only this user may tap buttons
 	chatID    int64
 	messageID int
 	step      int
@@ -136,6 +137,7 @@ func (w *wizardManager) start(chatID, userID int64) {
 
 	w.mu.Lock()
 	w.sessions[userID] = &wizardSession{
+		ownerID:   userID,
 		chatID:    chatID,
 		messageID: sent.MessageID,
 		step:      0,
@@ -163,8 +165,12 @@ func (w *wizardManager) handleCallback(cb *tgbotapi.CallbackQuery) {
 	sess, found := w.sessions[userID]
 	w.mu.Unlock()
 	if !found {
-		// Stale button after a restart — clear the keyboard.
-		w.editText(cb.Message.Chat.ID, cb.Message.MessageID, "Session expired. Send /tuneup to start again.", nil)
+		// Either a stale button after restart, or a foreign user tapping
+		// someone else's wizard. Either way: silent ack, leave message alone.
+		return
+	}
+	if cb.Message.MessageID != sess.messageID {
+		// Tap on a different (older) wizard message — ignore.
 		return
 	}
 	if step != sess.step {

@@ -74,6 +74,16 @@ func (t *TgBot) SetAccessControl(users storage.UsersStorage, invites storage.Inv
 	t.seedAdmins(adminIds)
 }
 
+// requirePrivate refuses management commands in non-private chats and tells
+// the user to DM the bot. Returns true if the chat is private.
+func (t *TgBot) requirePrivate(chat *tgbotapi.Chat) bool {
+	if chat.IsPrivate() {
+		return true
+	}
+	t.plainResponse(chat.ID, "This command is only available in a direct chat with me.")
+	return false
+}
+
 // userLanguage returns the user's preferred language, or fallback if not set.
 func (t *TgBot) userLanguage(userId int64, fallback string) string {
 	if t.prefs == nil {
@@ -189,6 +199,9 @@ func (t *TgBot) Start() error {
 					if !t.isAdmin(incoming.From.ID) {
 						continue
 					}
+					if !t.requirePrivate(chat) {
+						continue
+					}
 					msg := tgbotapi.NewMessage(chat.ID, "Admin menu:")
 					msg.ReplyMarkup = adminMenuKeyboard()
 					if _, err := t.api.Send(msg); err != nil {
@@ -197,6 +210,9 @@ func (t *TgBot) Start() error {
 					continue
 				case "gencode":
 					if !t.isAdmin(incoming.From.ID) {
+						continue
+					}
+					if !t.requirePrivate(chat) {
 						continue
 					}
 					code, err := t.generateAndSaveCode(incoming.From.ID)
@@ -208,6 +224,9 @@ func (t *TgBot) Start() error {
 					continue
 				case "codes":
 					if !t.isAdmin(incoming.From.ID) {
+						continue
+					}
+					if !t.requirePrivate(chat) {
 						continue
 					}
 					t.plainResponse(chat.ID, t.formatInviteList())
@@ -263,9 +282,15 @@ func (t *TgBot) Start() error {
 					go t.SendImageResponse(chat.ID, imagePrompt)
 					continue
 				case "menu":
+					if !t.requirePrivate(chat) {
+						continue
+					}
 					t.sendMenu(chat.ID)
 					continue
 				case "tuneup":
+					if !t.requirePrivate(chat) {
+						continue
+					}
 					if t.wizard == nil {
 						t.plainResponse(chat.ID, "Tuning is not available right now.")
 						continue
