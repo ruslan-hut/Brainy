@@ -142,8 +142,9 @@ func (e *streamEditor) finalize(finalText string) {
 		if isNotModified(err) {
 			return
 		}
-		// Markdown failed; retry without parse mode.
-		fallback := tgbotapi.NewEditMessageText(e.chatId, msgID, finalText)
+		// Markdown failed; retry without parse mode and strip leftover markers
+		// so the user doesn't see raw "**" / "*" / "_".
+		fallback := tgbotapi.NewEditMessageText(e.chatId, msgID, stripMarkdown(finalText))
 		if _, err2 := e.bot.api.Send(fallback); err2 != nil && !isNotModified(err2) {
 			e.bot.log.With(slog.Int64("id", e.chatId)).Warn("stream finalize", sl.Err(err2))
 		}

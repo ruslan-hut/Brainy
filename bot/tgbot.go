@@ -462,7 +462,7 @@ func (t *TgBot) plainResponse(chatId int64, text string) {
 		t.log.With(
 			slog.Int64("id", chatId),
 		).Warn("sending message", sl.Err(err))
-		safeMsg := tgbotapi.NewMessage(chatId, text)
+		safeMsg := tgbotapi.NewMessage(chatId, stripMarkdown(text))
 		_, err = t.api.Send(safeMsg)
 		if err != nil {
 			t.log.With(
@@ -486,6 +486,14 @@ func (t *TgBot) isReplyToBot(message *tgbotapi.Message) bool {
 		return message.ReplyToMessage.From.UserName == t.botUsername
 	}
 	return false
+}
+
+// stripMarkdown removes inline markdown emphasis markers (* and _) from text.
+// Used as a fallback when MarkdownV2 parsing fails, so the user sees clean
+// prose instead of raw markup. Code spans (backticks) are preserved.
+func stripMarkdown(input string) string {
+	r := strings.NewReplacer("**", "", "*", "", "__", "", "_", "")
+	return r.Replace(input)
 }
 
 func sanitize(input string) string {
