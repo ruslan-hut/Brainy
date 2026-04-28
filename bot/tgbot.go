@@ -27,6 +27,7 @@ type TgBot struct {
 	log         *slog.Logger
 	api         *tgbotapi.BotAPI
 	chat        core.ChatService
+	prefs       storage.PreferencesStorage
 	wizard      *wizardManager
 	botUsername string
 	stopChan    chan struct{}
@@ -56,7 +57,20 @@ func (t *TgBot) SetChat(chat core.ChatService) {
 
 // SetPreferences enables the /tuneup wizard backed by the given storage.
 func (t *TgBot) SetPreferences(prefs storage.PreferencesStorage) {
+	t.prefs = prefs
 	t.wizard = newWizardManager(t.api, prefs, t.log)
+}
+
+// userLanguage returns the user's preferred language, or fallback if not set.
+func (t *TgBot) userLanguage(userId int64, fallback string) string {
+	if t.prefs == nil {
+		return fallback
+	}
+	p, err := t.prefs.GetUserPreferences(userId)
+	if err != nil || p == nil || p.PreferredLanguage == "" {
+		return fallback
+	}
+	return p.PreferredLanguage
 }
 
 func (t *TgBot) Start() error {
@@ -120,7 +134,12 @@ func (t *TgBot) Start() error {
 						t.plainResponse(chat.ID, "Please provide a question. Example: /ask what is the capital of France?")
 						continue
 					}
-					go t.sendOneShot(chat.ID, stripped)
+					lang := t.userLanguage(incoming.From.ID, "")
+					prompt := stripped
+					if lang != "" {
+						prompt = fmt.Sprintf("Answer in %s. %s", lang, stripped)
+					}
+					go t.sendOneShot(chat.ID, prompt)
 					continue
 				case "cat":
 					word := strings.TrimSpace(strings.TrimPrefix(question, "/cat"))
@@ -128,7 +147,7 @@ func (t *TgBot) Start() error {
 						t.plainResponse(chat.ID, "Please provide a word. Example: /cat poma")
 						continue
 					}
-					go t.sendTranslate(chat.ID, "Catalan", word)
+					go t.sendTranslate(chat.ID, "Catalan", word, t.userLanguage(incoming.From.ID, "English"))
 					continue
 				case "cas":
 					word := strings.TrimSpace(strings.TrimPrefix(question, "/cas"))
@@ -136,10 +155,11 @@ func (t *TgBot) Start() error {
 						t.plainResponse(chat.ID, "Please provide a word. Example: /cas manzana")
 						continue
 					}
-					go t.sendTranslate(chat.ID, "Spanish", word)
+					go t.sendTranslate(chat.ID, "Spanish", word, t.userLanguage(incoming.From.ID, "English"))
 					continue
 				case "hello":
-					go t.sendOneShot(chat.ID, "Answer in Ukrainian: Say one random fact from science.")
+					lang := t.userLanguage(incoming.From.ID, "English")
+					go t.sendOneShot(chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang))
 					continue
 				case "topic":
 					topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
@@ -261,9 +281,9 @@ func (t *TgBot) sendOneShot(chatId int64, prompt string) {
 	})
 }
 
-func (t *TgBot) sendTranslate(chatId int64, language, word string) {
+func (t *TgBot) sendTranslate(chatId int64, language, word, responseLanguage string) {
 	t.withTyping(chatId, func() {
-		text, err := t.chat.Translate(language, word)
+		text, err := t.chat.Translate(language, word, responseLanguage)
 		if err != nil {
 			t.log.With(slog.Int64("id", chatId)).Error("translate reply", sl.Err(err))
 			t.plainResponse(chatId, errorResponse)

@@ -14,7 +14,7 @@ type ChatService interface {
 	// when the model returns a tool call instead of text.
 	AskStream(userId int64, text string, onDelta func(content string)) (Response, error)
 	OneShot(prompt string) (string, error)
-	Translate(language, word string) (string, error)
+	Translate(language, word, responseLanguage string) (string, error)
 	GenerateImage(userId int64, prompt string) ([]byte, error)
 	SetTopic(userId int64, topic string)
 	ClearContext(userId int64)

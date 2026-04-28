@@ -289,8 +289,10 @@ func (c *ChatGPT) OneShot(prompt string) (string, error) {
 }
 
 // Translate returns a dictionary-style translation for a single word.
-func (c *ChatGPT) Translate(language, word string) (string, error) {
-	return c.OneShot(languageTranslatePrompt(language) + word)
+// responseLanguage controls the language of the article itself (transcription
+// labels, examples, etc.); pass "" or "English" for the default.
+func (c *ChatGPT) Translate(language, word, responseLanguage string) (string, error) {
+	return c.OneShot(languageTranslatePrompt(language, responseLanguage) + word)
 }
 
 func (c *ChatGPT) buildMessages(userId int64, question string) []openai.ChatCompletionMessageParamUnion {
@@ -334,8 +336,13 @@ func (c *ChatGPT) systemPrompt(userId int64) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func languageTranslatePrompt(language string) string {
-	p := "Act as a " + language + "-English dictionary. Give response like an Dictionary article. Add the following information: "
+func languageTranslatePrompt(language, responseLanguage string) string {
+	if responseLanguage == "" {
+		responseLanguage = "English"
+	}
+	p := "Act as a " + language + "-" + responseLanguage + " dictionary. "
+	p += "Write the entire dictionary article in " + responseLanguage + ". "
+	p += "Give response like a Dictionary article. Add the following information: "
 	p += "[ transcription ] "
 	p += "- gender, empty if not applicable "
 	p += "- grammar form, empty if not applicable "
