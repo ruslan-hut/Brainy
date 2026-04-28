@@ -88,9 +88,6 @@ func main() {
 				invitesStore = storage.NewMemoryInvitesStorage()
 			}
 			log.Info("using MongoDB storage")
-
-			// MIGRATION (one-shot): pre-approve users that pre-date the invite system.
-			migrateApprovedUsers(mongoStore.GetClient(), mongoStore.GetDatabase(), usersStore, log)
 		}
 	} else {
 		store = storage.NewMemoryStorage()

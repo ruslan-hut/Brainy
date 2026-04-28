@@ -111,7 +111,9 @@ func (t *TgBot) redeemAndRegister(userId int64, username, code string) error {
 
 // handleStart processes /start. With an arg it redeems immediately; without
 // one it prompts the user for their invite code (consumed by the next message).
-func (t *TgBot) handleStart(chatID, userID int64, username, code string) {
+// messageID is the /start message itself; deleted on successful redemption so
+// the code doesn't linger in the chat history.
+func (t *TgBot) handleStart(chatID, userID int64, messageID int, username, code string) {
 	if t.isAuthorized(userID) {
 		t.plainResponse(chatID, "Welcome back. Type /help to see what I can do.")
 		return
@@ -121,12 +123,13 @@ func (t *TgBot) handleStart(chatID, userID int64, username, code string) {
 		t.plainResponse(chatID, "Hello! Please send me your invite code.")
 		return
 	}
-	t.handleInviteSubmission(chatID, userID, username, code)
+	t.handleInviteSubmission(chatID, userID, messageID, username, code)
 }
 
-// handleInviteSubmission tries to redeem code; on success registers the user.
-// On failure the user stays in "awaiting" state so they can retype.
-func (t *TgBot) handleInviteSubmission(chatID, userID int64, username, code string) {
+// handleInviteSubmission tries to redeem code; on success registers the user
+// and deletes their message containing the code. On failure the user stays in
+// "awaiting" state so they can retype.
+func (t *TgBot) handleInviteSubmission(chatID, userID int64, messageID int, username, code string) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code == "" {
 		t.plainResponse(chatID, "Please send your invite code.")
@@ -138,8 +141,21 @@ func (t *TgBot) handleInviteSubmission(chatID, userID int64, username, code stri
 		return
 	}
 	t.awaiting.Delete(userID)
+	t.deleteMessage(chatID, messageID)
 	t.log.With(slog.Int64("user", userID), slog.String("code", code)).Info("user registered")
 	t.plainResponse(chatID, "Code accepted, welcome! Type /help to get started.")
+}
+
+// deleteMessage best-effort removes a message; logs at debug if it fails
+// (e.g. bot lacks delete permission in a group).
+func (t *TgBot) deleteMessage(chatID int64, messageID int) {
+	if messageID == 0 {
+		return
+	}
+	if _, err := t.api.Request(tgbotapi.NewDeleteMessage(chatID, messageID)); err != nil {
+		t.log.With(slog.Int64("id", chatID), slog.Int("msg", messageID)).
+			Debug("delete message", sl.Err(err))
+	}
 }
 
 // handleAdminCallback dispatches admin menu button taps.

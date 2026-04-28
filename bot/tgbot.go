@@ -142,16 +142,17 @@ func (t *TgBot) Start() error {
 				continue
 			}
 
-			// Access control: gate non-/start traffic for unregistered users.
-			if t.users != nil {
+			// Access control: invites only gate DMs. In groups, presence in
+			// the chat implies access — group membership is the authorization.
+			if t.users != nil && chat.IsPrivate() {
 				if incoming.IsCommand() && incoming.Command() == "start" {
 					arg := strings.TrimSpace(strings.TrimPrefix(question, "/start"))
-					t.handleStart(chat.ID, incoming.From.ID, chat.UserName, arg)
+					t.handleStart(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, arg)
 					continue
 				}
 				if !t.isAuthorized(incoming.From.ID) {
 					if _, awaiting := t.awaiting.Load(incoming.From.ID); awaiting && !incoming.IsCommand() {
-						t.handleInviteSubmission(chat.ID, incoming.From.ID, chat.UserName, question)
+						t.handleInviteSubmission(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, question)
 						continue
 					}
 					t.plainResponse(chat.ID, "Access is by invite only. Send /start to begin.")
