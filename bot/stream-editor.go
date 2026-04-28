@@ -164,7 +164,7 @@ func (e *streamEditor) deleteIfPosted() {
 	if msgID == 0 {
 		return
 	}
-	if _, err := e.bot.api.Send(tgbotapi.NewDeleteMessage(e.chatId, msgID)); err != nil {
+	if _, err := e.bot.api.Request(tgbotapi.NewDeleteMessage(e.chatId, msgID)); err != nil {
 		e.bot.log.With(slog.Int64("id", e.chatId)).Debug("stream delete", sl.Err(err))
 	}
 }

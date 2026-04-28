@@ -204,7 +204,7 @@ func (t *TgBot) Stop() {
 
 func (t *TgBot) sendChatAction(chatId int64, action string) {
 	msg := tgbotapi.NewChatAction(chatId, action)
-	_, err := t.api.Send(msg)
+	_, err := t.api.Request(msg)
 	if err != nil {
 		t.log.With(
 			slog.String("action", action),
