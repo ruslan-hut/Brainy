@@ -94,6 +94,7 @@ func main() {
 	}
 
 	tgBot.SetChat(chat)
+	tgBot.SetPreferences(prefsStore)
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

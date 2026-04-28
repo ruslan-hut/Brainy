@@ -3,10 +3,11 @@ module Brainy
 go 1.24.0
 
 require (
-	github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible
+	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/ilyakaznacheev/cleanenv v1.5.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/openai/openai-go/v3 v3.32.0
+	github.com/pkoukk/tiktoken-go v0.1.8
 	go.mongodb.org/mongo-driver v1.17.6
 )
 
@@ -21,8 +22,6 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
-	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
-	github.com/technoweenie/multipartstreamer v1.0.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

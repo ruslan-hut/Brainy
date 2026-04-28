@@ -3,13 +3,14 @@ package bot
 import (
 	"Brainy/core"
 	"Brainy/lib/sl"
+	"Brainy/storage"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 const streamEditInterval = 400 * time.Millisecond
@@ -26,6 +27,7 @@ type TgBot struct {
 	log         *slog.Logger
 	api         *tgbotapi.BotAPI
 	chat        core.ChatService
+	wizard      *wizardManager
 	botUsername string
 	stopChan    chan struct{}
 }
@@ -52,21 +54,29 @@ func (t *TgBot) SetChat(chat core.ChatService) {
 	t.chat = chat
 }
 
+// SetPreferences enables the /tuneup wizard backed by the given storage.
+func (t *TgBot) SetPreferences(prefs storage.PreferencesStorage) {
+	t.wizard = newWizardManager(t.api, prefs, t.log)
+}
+
 func (t *TgBot) Start() error {
 	// Set up an update configuration
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
 	// Start listening for updates
-	updates, err := t.api.GetUpdatesChan(u)
-	if err != nil {
-		return fmt.Errorf("getting updates channel: %v", err)
-	}
+	updates := t.api.GetUpdatesChan(u)
 
 	// Define a command handler
 	for {
 		select {
 		case update := <-updates:
+			if update.CallbackQuery != nil {
+				if t.wizard != nil && strings.HasPrefix(update.CallbackQuery.Data, callbackPrefix+":") {
+					t.wizard.handleCallback(update.CallbackQuery)
+				}
+				continue
+			}
 			if update.Message == nil {
 				continue
 			}
@@ -101,6 +111,7 @@ func (t *TgBot) Start() error {
 					text += "/cas - Spanish-English dictionary lookup\n"
 					text += "/imagine - generate an image from description\n"
 					text += "/clear - clear bot memory to begin new topic\n"
+					text += "/tuneup - configure tone, length, language, etc.\n"
 					t.plainResponse(chat.ID, text)
 					continue
 				case "ask":
@@ -146,6 +157,13 @@ func (t *TgBot) Start() error {
 						continue
 					}
 					go t.SendImageResponse(chat.ID, imagePrompt)
+					continue
+				case "tuneup":
+					if t.wizard == nil {
+						t.plainResponse(chat.ID, "Tuning is not available right now.")
+						continue
+					}
+					t.wizard.start(chat.ID, incoming.From.ID)
 					continue
 				case "clear":
 					t.log.With(
@@ -289,7 +307,7 @@ func (t *TgBot) generateAndSendImage(chatId int64, prompt string) {
 		t.plainResponse(chatId, "Sorry, I couldn't generate the image. Please try again with a different description.")
 		return
 	}
-	msg := tgbotapi.NewPhotoUpload(chatId, tgbotapi.FileBytes{Name: "image.png", Bytes: data})
+	msg := tgbotapi.NewPhoto(chatId, tgbotapi.FileBytes{Name: "image.png", Bytes: data})
 	if _, err := t.api.Send(msg); err != nil {
 		t.log.With(slog.Int64("id", chatId)).Error("sending image", sl.Err(err))
 		t.plainResponse(chatId, "Sorry, I couldn't send the image.")

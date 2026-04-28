@@ -8,7 +8,7 @@ import (
 
 	"Brainy/lib/sl"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // streamEditor renders a streaming chat completion to a single Telegram

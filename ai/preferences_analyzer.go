@@ -107,6 +107,9 @@ func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(userId int64) {
 }
 
 func (pa *PreferencesAnalyzer) AnalyzeUser(userId int64) error {
+	if existing, _ := pa.prefsStorage.GetUserPreferences(userId); existing != nil && existing.ManuallySet {
+		return nil
+	}
 	dialogCtx, err := pa.contextStorage.GetUserContext(userId)
 	if err != nil {
 		return fmt.Errorf("getting user context: %w", err)

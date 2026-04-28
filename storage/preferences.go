@@ -12,6 +12,7 @@ type UserPreferences struct {
 	TechnicalLevel    string    `bson:"technical_level"`    // "beginner", "intermediate", "expert"
 	HumorPreference   string    `bson:"humor_preference"`   // "none", "occasional", "frequent"
 	ResponseLength    string    `bson:"response_length"`    // "short", "medium", "long"
+	ManuallySet       bool      `bson:"manually_set"`       // true if user set prefs via /tuneup; analyzer must not overwrite
 	LastAnalysisAt    time.Time `bson:"last_analysis_at"`
 	LastMessageAt     time.Time `bson:"last_message_at"`
 	CreatedAt         time.Time `bson:"created_at"`
