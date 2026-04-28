@@ -24,17 +24,18 @@ var smileEmojis = []string{
 const errorResponse = "Sorry, I'm not feeling well today. Please try again later."
 
 type TgBot struct {
-	conf        *core.Config
-	log         *slog.Logger
-	api         *tgbotapi.BotAPI
-	chat        core.ChatService
-	prefs       storage.PreferencesStorage
-	users       storage.UsersStorage
-	invites     storage.InvitesStorage
-	awaiting    sync.Map // userID -> struct{} : user prompted for invite code, next message is the code
-	wizard      *wizardManager
-	botUsername string
-	stopChan    chan struct{}
+	conf          *core.Config
+	log           *slog.Logger
+	api           *tgbotapi.BotAPI
+	chat          core.ChatService
+	prefs         storage.PreferencesStorage
+	users         storage.UsersStorage
+	invites       storage.InvitesStorage
+	awaiting      sync.Map // userID -> struct{} : user prompted for invite code, next message is the code
+	awaitingTopic sync.Map // userID -> struct{} : /menu topic button pressed, next message is the topic
+	wizard        *wizardManager
+	botUsername   string
+	stopChan      chan struct{}
 }
 
 func NewTgBot(conf *core.Config, log *slog.Logger) (*TgBot, error) {
@@ -104,6 +105,8 @@ func (t *TgBot) Start() error {
 					t.wizard.handleCallback(update.CallbackQuery)
 				case strings.HasPrefix(data, adminCallbackPrefix+":"):
 					t.handleAdminCallback(update.CallbackQuery)
+				case strings.HasPrefix(data, menuCallbackPrefix+":"):
+					t.handleMenuCallback(update.CallbackQuery)
 				}
 				continue
 			}
@@ -146,6 +149,20 @@ func (t *TgBot) Start() error {
 				}
 			}
 
+			// Capture topic submission triggered from /menu.
+			if !incoming.IsCommand() {
+				if _, ok := t.awaitingTopic.LoadAndDelete(incoming.From.ID); ok {
+					topic := strings.TrimSpace(question)
+					if topic == "" {
+						t.plainResponse(chat.ID, "Topic was empty, nothing changed.")
+						continue
+					}
+					t.chat.SetTopic(chat.ID, topic)
+					t.plainResponse(chat.ID, "Topic set: "+topic)
+					continue
+				}
+			}
+
 			if incoming.IsCommand() {
 				switch incoming.Command() {
 				case "help":
@@ -159,6 +176,7 @@ func (t *TgBot) Start() error {
 					text += "/imagine - generate an image from description\n"
 					text += "/clear - clear bot memory to begin new topic\n"
 					text += "/tuneup - configure tone, length, language, etc.\n"
+					text += "/menu - quick actions (set topic, clear context)\n"
 					if t.isAdmin(incoming.From.ID) {
 						text += "\nAdmin commands:\n"
 						text += "/admin - show admin menu\n"
@@ -243,6 +261,9 @@ func (t *TgBot) Start() error {
 						continue
 					}
 					go t.SendImageResponse(chat.ID, imagePrompt)
+					continue
+				case "menu":
+					t.sendMenu(chat.ID)
 					continue
 				case "tuneup":
 					if t.wizard == nil {
