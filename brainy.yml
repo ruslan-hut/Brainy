@@ -3,7 +3,7 @@ env: dev
 telegram_api_key: ${TELEGRAM_API_KEY}
 openai_api_key: ${OPENAI_API_KEY}
 username: ${BOT_USERNAME}
-model: gpt-5-nano
+model: gpt-5.4-nano
 mongo:
   enabled: true
   host: ${MONGO_HOST}
