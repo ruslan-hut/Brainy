@@ -84,6 +84,17 @@ func (t *TgBot) requirePrivate(chat *tgbotapi.Chat) bool {
 	return false
 }
 
+// adminTarget returns the chat ID to use for an admin command's response.
+// If invoked in a non-private chat, deletes the original message and redirects
+// to the admin's DM (their user ID == private chat ID in Telegram).
+func (t *TgBot) adminTarget(chat *tgbotapi.Chat, msg *tgbotapi.Message) int64 {
+	if chat.IsPrivate() {
+		return chat.ID
+	}
+	t.deleteMessage(chat.ID, msg.MessageID)
+	return msg.From.ID
+}
+
 // userLanguage returns the user's preferred language, or fallback if not set.
 func (t *TgBot) userLanguage(userId int64, fallback string) string {
 	if t.prefs == nil {
@@ -193,6 +204,7 @@ func (t *TgBot) Start() error {
 						text += "/admin - show admin menu\n"
 						text += "/gencode - generate an invite code\n"
 						text += "/codes - list invite codes\n"
+						text += "/showid - show current chat id\n"
 					}
 					t.plainResponse(chat.ID, text)
 					continue
@@ -200,37 +212,39 @@ func (t *TgBot) Start() error {
 					if !t.isAdmin(incoming.From.ID) {
 						continue
 					}
-					if !t.requirePrivate(chat) {
-						continue
-					}
-					msg := tgbotapi.NewMessage(chat.ID, "Admin menu:")
+					target := t.adminTarget(chat, incoming)
+					msg := tgbotapi.NewMessage(target, "Admin menu:")
 					msg.ReplyMarkup = adminMenuKeyboard()
 					if _, err := t.api.Send(msg); err != nil {
-						t.log.With(slog.Int64("id", chat.ID)).Warn("admin menu", sl.Err(err))
+						t.log.With(slog.Int64("id", target)).Warn("admin menu", sl.Err(err))
 					}
 					continue
 				case "gencode":
 					if !t.isAdmin(incoming.From.ID) {
 						continue
 					}
-					if !t.requirePrivate(chat) {
-						continue
-					}
+					target := t.adminTarget(chat, incoming)
 					code, err := t.generateAndSaveCode(incoming.From.ID)
 					if err != nil {
-						t.plainResponse(chat.ID, "Failed to generate code: "+err.Error())
+						t.plainResponse(target, "Failed to generate code: "+err.Error())
 						continue
 					}
-					t.plainResponse(chat.ID, "New invite code: "+code)
+					t.plainResponse(target, "New invite code: "+code)
 					continue
 				case "codes":
 					if !t.isAdmin(incoming.From.ID) {
 						continue
 					}
-					if !t.requirePrivate(chat) {
+					target := t.adminTarget(chat, incoming)
+					t.plainResponse(target, t.formatInviteList())
+					continue
+				case "showid":
+					if !t.isAdmin(incoming.From.ID) {
 						continue
 					}
-					t.plainResponse(chat.ID, t.formatInviteList())
+					sourceChatID := chat.ID
+					target := t.adminTarget(chat, incoming)
+					t.plainResponse(target, fmt.Sprintf("Chat ID: %d\nType: %s\nTitle: %s", sourceChatID, chat.Type, chat.Title))
 					continue
 				case "ask":
 					stripped := strings.TrimSpace(strings.TrimPrefix(question, "/ask"))
