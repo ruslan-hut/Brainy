@@ -1,5 +1,4 @@
 ---
-
 env: dev
 telegram_api_key: ${TELEGRAM_API_KEY}
 openai_api_key: ${OPENAI_API_KEY}
@@ -12,3 +11,5 @@ mongo:
   user: ${MONGO_USER}
   password: ${MONGO_PASSWORD}
   database: ${MONGO_DATABASE}
+admin_user_ids:
+  - 64156944

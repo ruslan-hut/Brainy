@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -28,6 +29,9 @@ type TgBot struct {
 	api         *tgbotapi.BotAPI
 	chat        core.ChatService
 	prefs       storage.PreferencesStorage
+	users       storage.UsersStorage
+	invites     storage.InvitesStorage
+	awaiting    sync.Map // userID -> struct{} : user prompted for invite code, next message is the code
 	wizard      *wizardManager
 	botUsername string
 	stopChan    chan struct{}
@@ -61,6 +65,14 @@ func (t *TgBot) SetPreferences(prefs storage.PreferencesStorage) {
 	t.wizard = newWizardManager(t.api, prefs, t.log)
 }
 
+// SetAccessControl enables role-based gating and the invite-code system.
+// Admin IDs from config are seeded as admins on startup.
+func (t *TgBot) SetAccessControl(users storage.UsersStorage, invites storage.InvitesStorage, adminIds []int64) {
+	t.users = users
+	t.invites = invites
+	t.seedAdmins(adminIds)
+}
+
 // userLanguage returns the user's preferred language, or fallback if not set.
 func (t *TgBot) userLanguage(userId int64, fallback string) string {
 	if t.prefs == nil {
@@ -86,8 +98,12 @@ func (t *TgBot) Start() error {
 		select {
 		case update := <-updates:
 			if update.CallbackQuery != nil {
-				if t.wizard != nil && strings.HasPrefix(update.CallbackQuery.Data, callbackPrefix+":") {
+				data := update.CallbackQuery.Data
+				switch {
+				case t.wizard != nil && strings.HasPrefix(data, callbackPrefix+":"):
 					t.wizard.handleCallback(update.CallbackQuery)
+				case strings.HasPrefix(data, adminCallbackPrefix+":"):
+					t.handleAdminCallback(update.CallbackQuery)
 				}
 				continue
 			}
@@ -113,6 +129,23 @@ func (t *TgBot) Start() error {
 				continue
 			}
 
+			// Access control: gate non-/start traffic for unregistered users.
+			if t.users != nil {
+				if incoming.IsCommand() && incoming.Command() == "start" {
+					arg := strings.TrimSpace(strings.TrimPrefix(question, "/start"))
+					t.handleStart(chat.ID, incoming.From.ID, chat.UserName, arg)
+					continue
+				}
+				if !t.isAuthorized(incoming.From.ID) {
+					if _, awaiting := t.awaiting.Load(incoming.From.ID); awaiting && !incoming.IsCommand() {
+						t.handleInviteSubmission(chat.ID, incoming.From.ID, chat.UserName, question)
+						continue
+					}
+					t.plainResponse(chat.ID, "Access is by invite only. Send /start to begin.")
+					continue
+				}
+			}
+
 			if incoming.IsCommand() {
 				switch incoming.Command() {
 				case "help":
@@ -126,7 +159,40 @@ func (t *TgBot) Start() error {
 					text += "/imagine - generate an image from description\n"
 					text += "/clear - clear bot memory to begin new topic\n"
 					text += "/tuneup - configure tone, length, language, etc.\n"
+					if t.isAdmin(incoming.From.ID) {
+						text += "\nAdmin commands:\n"
+						text += "/admin - show admin menu\n"
+						text += "/gencode - generate an invite code\n"
+						text += "/codes - list invite codes\n"
+					}
 					t.plainResponse(chat.ID, text)
+					continue
+				case "admin":
+					if !t.isAdmin(incoming.From.ID) {
+						continue
+					}
+					msg := tgbotapi.NewMessage(chat.ID, "Admin menu:")
+					msg.ReplyMarkup = adminMenuKeyboard()
+					if _, err := t.api.Send(msg); err != nil {
+						t.log.With(slog.Int64("id", chat.ID)).Warn("admin menu", sl.Err(err))
+					}
+					continue
+				case "gencode":
+					if !t.isAdmin(incoming.From.ID) {
+						continue
+					}
+					code, err := t.generateAndSaveCode(incoming.From.ID)
+					if err != nil {
+						t.plainResponse(chat.ID, "Failed to generate code: "+err.Error())
+						continue
+					}
+					t.plainResponse(chat.ID, "New invite code: "+code)
+					continue
+				case "codes":
+					if !t.isAdmin(incoming.From.ID) {
+						continue
+					}
+					t.plainResponse(chat.ID, t.formatInviteList())
 					continue
 				case "ask":
 					stripped := strings.TrimSpace(strings.TrimPrefix(question, "/ask"))

@@ -42,6 +42,8 @@ func main() {
 	// Initialize storage based on config
 	var store storage.ContextStorage
 	var prefsStore storage.PreferencesStorage
+	var usersStore storage.UsersStorage
+	var invitesStore storage.InvitesStorage
 	var mongoStore *storage.MongoStorage
 
 	if conf.Mongo.Enabled {
@@ -61,6 +63,8 @@ func main() {
 			).Error("falling back to memory", sl.Err(err))
 			store = storage.NewMemoryStorage()
 			prefsStore = storage.NewMemoryPreferencesStorage()
+			usersStore = storage.NewMemoryUsersStorage()
+			invitesStore = storage.NewMemoryInvitesStorage()
 		} else {
 			store = mongoStore
 			// Initialize preferences storage with shared MongoDB client
@@ -73,11 +77,23 @@ func main() {
 				log.Warn("preferences storage fallback to memory", sl.Err(err))
 				prefsStore = storage.NewMemoryPreferencesStorage()
 			}
+			usersStore, err = storage.NewMongoUsersStorage(mongoStore.GetClient(), mongoStore.GetDatabase(), log)
+			if err != nil {
+				log.Warn("users storage fallback to memory", sl.Err(err))
+				usersStore = storage.NewMemoryUsersStorage()
+			}
+			invitesStore, err = storage.NewMongoInvitesStorage(mongoStore.GetClient(), mongoStore.GetDatabase(), log)
+			if err != nil {
+				log.Warn("invites storage fallback to memory", sl.Err(err))
+				invitesStore = storage.NewMemoryInvitesStorage()
+			}
 			log.Info("using MongoDB storage")
 		}
 	} else {
 		store = storage.NewMemoryStorage()
 		prefsStore = storage.NewMemoryPreferencesStorage()
+		usersStore = storage.NewMemoryUsersStorage()
+		invitesStore = storage.NewMemoryInvitesStorage()
 		log.Info("using in-memory storage")
 	}
 
@@ -95,6 +111,7 @@ func main() {
 
 	tgBot.SetChat(chat)
 	tgBot.SetPreferences(prefsStore)
+	tgBot.SetAccessControl(usersStore, invitesStore, conf.AdminUserIds)
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -123,6 +140,12 @@ func main() {
 	}
 	if err := prefsStore.Close(); err != nil {
 		log.Error("error closing preferences storage", sl.Err(err))
+	}
+	if err := usersStore.Close(); err != nil {
+		log.Error("error closing users storage", sl.Err(err))
+	}
+	if err := invitesStore.Close(); err != nil {
+		log.Error("error closing invites storage", sl.Err(err))
 	}
 
 	log.Info("shutdown complete")
