@@ -280,6 +280,9 @@ func (t *TgBot) Start() error {
 					go t.sendOneShot(chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang))
 					continue
 				case "topic":
+					if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+						continue
+					}
 					topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
 					if topic == "" {
 						t.plainResponse(chat.ID, "Please provide a subject. Example: /topic astronomy")
@@ -303,6 +306,9 @@ func (t *TgBot) Start() error {
 					t.sendMenu(chat.ID)
 					continue
 				case "tuneup":
+					if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+						continue
+					}
 					if !t.requirePrivate(chat) {
 						continue
 					}
@@ -313,6 +319,9 @@ func (t *TgBot) Start() error {
 					t.wizard.start(chat.ID, incoming.From.ID)
 					continue
 				case "clear":
+					if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+						continue
+					}
 					t.log.With(
 						slog.String("user", chat.UserName),
 						slog.Int64("id", chat.ID),
