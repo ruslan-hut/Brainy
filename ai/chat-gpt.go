@@ -75,6 +75,14 @@ func (c *ChatGPT) SetTopic(userId int64, topic string) {
 	c.contextManager.SetTopic(userId, topic)
 }
 
+func (c *ChatGPT) GetTopic(userId int64) string {
+	ctx := c.contextManager.GetUserContext(userId)
+	if ctx == nil {
+		return ""
+	}
+	return ctx.Topic
+}
+
 // SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
 func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
 	c.prefsAnalyzer = pa

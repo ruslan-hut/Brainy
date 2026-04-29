@@ -17,5 +17,6 @@ type ChatService interface {
 	Translate(language, word, responseLanguage string) (string, error)
 	GenerateImage(userId int64, prompt string) ([]byte, error)
 	SetTopic(userId int64, topic string)
+	GetTopic(userId int64) string
 	ClearContext(userId int64)
 }

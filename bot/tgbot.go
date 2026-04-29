@@ -284,12 +284,17 @@ func (t *TgBot) Start() error {
 						continue
 					}
 					topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
-					if topic == "" {
-						t.plainResponse(chat.ID, "Please provide a subject. Example: /topic astronomy")
+					if topic != "" {
+						t.chat.SetTopic(chat.ID, topic)
+						t.plainResponse(chat.ID, "Let's talk about "+topic+".")
 						continue
 					}
-					t.chat.SetTopic(chat.ID, topic)
-					t.plainResponse(chat.ID, "Let's talk about "+topic+".")
+					current := t.chat.GetTopic(chat.ID)
+					if current == "" {
+						t.plainResponse(chat.ID, "No topic set. Provide a subject. Example: /topic astronomy")
+						continue
+					}
+					t.sendTopicMenu(chat.ID, current)
 					continue
 				case "imagine":
 					imagePrompt := strings.TrimSpace(strings.TrimPrefix(question, "/imagine"))

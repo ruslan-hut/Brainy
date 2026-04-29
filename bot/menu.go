@@ -55,6 +55,34 @@ func (t *TgBot) handleMenuCallback(cb *tgbotapi.CallbackQuery) {
 		t.chat.ClearContext(chatID)
 		t.log.With(slog.Int64("user", userID)).Info("context cleared via menu")
 		t.editPlain(chatID, msgID, "Context cleared.")
+	case "topic_change":
+		t.awaitingTopic.Store(userID, struct{}{})
+		t.editPlain(chatID, msgID, "Send me the new topic.")
+	case "topic_clear":
+		t.chat.SetTopic(chatID, "")
+		t.editPlain(chatID, msgID, "Topic cleared.")
+	case "topic_exit":
+		current := t.chat.GetTopic(chatID)
+		if current == "" {
+			t.editPlain(chatID, msgID, "No topic set.")
+			return
+		}
+		t.editPlain(chatID, msgID, "Topic kept: "+current)
+	}
+}
+
+// sendTopicMenu shows the current topic with Change/Clear/Exit buttons.
+func (t *TgBot) sendTopicMenu(chatID int64, current string) {
+	msg := tgbotapi.NewMessage(chatID, "Current topic: "+current)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Change", menuCallbackPrefix+":topic_change"),
+			tgbotapi.NewInlineKeyboardButtonData("Clear", menuCallbackPrefix+":topic_clear"),
+			tgbotapi.NewInlineKeyboardButtonData("Exit", menuCallbackPrefix+":topic_exit"),
+		),
+	)
+	if _, err := t.api.Send(msg); err != nil {
+		t.log.With(slog.Int64("id", chatID)).Warn("sending topic menu", sl.Err(err))
 	}
 }
 
