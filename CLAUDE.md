@@ -53,7 +53,7 @@ Telegram bot (`github.com/go-telegram/bot`, imported as `tg`) backed by the Open
 
 ### Context
 
-Every storage, `holder`, `ai` and `ChatService` method takes `ctx` first (except `Close`); per-call timeouts wrap the caller's ctx. Bot handlers receive the root ctx from `TgBot.Start`, so cancellation reaches OpenAI and MongoDB calls on shutdown.
+Every storage, `holder`, `ai` and `ChatService` method takes `ctx` first (except `Close`); per-call timeouts wrap the caller's ctx. Bot handlers receive the root ctx from `TgBot.Start`. Reply goroutines (`goSafe`) get it detached with `context.WithoutCancel`, so shutdown lets in-flight replies finish (Telegram has already confirmed those updates); `Start` waits up to `shutdownGrace` for them. Background preference analysis is cancelled on shutdown.
 
 ### OpenAI constraints
 
@@ -64,7 +64,7 @@ Every storage, `holder`, `ai` and `ChatService` method takes `ctx` first (except
 
 - Messages are limited to 4096 UTF-16 units; all outgoing text goes through `splitMessage`, which also keeps code fences balanced per chunk.
 - Private chats stream via `SendMessageDraft`; groups stream by editing a posted message. A draft is never persisted — the final reply is always sent as a regular message.
-- Updates are handled one at a time (`WithNotAsyncHandlers`, one worker) in `handleUpdate`; anything slow (LLM calls, image generation) must go through `goSafe`, which recovers panics and is tracked so shutdown waits for it.
+- Updates are handled one at a time (`WithNotAsyncHandlers`, one worker) in `handleUpdate`; anything slow (LLM calls, image generation) must go through `goSafe`, which recovers panics, detaches from shutdown cancellation, and is tracked so shutdown waits for it.
 - Callback `cb.Message.Message` is nil for inaccessible messages; check it before use.
 
 ## Bot Commands

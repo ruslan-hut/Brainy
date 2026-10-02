@@ -92,11 +92,22 @@ func (pa *PreferencesAnalyzer) runBackgroundAnalysis(ctx context.Context) {
 	}
 }
 
+// TriggerAnalysisAsync analyzes userId's preferences in the background. The
+// dialog is read before it returns, so the caller may clear it right after
+// (as /clear does) without the analysis seeing an empty history.
 func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(ctx context.Context, userId int64) {
 	if ctx.Err() != nil {
 		return
 	}
 	if _, loaded := pa.analysisInFlight.LoadOrStore(userId, true); loaded {
+		return
+	}
+	userMessages, err := pa.userMessages(ctx, userId)
+	if err != nil || userMessages == nil {
+		pa.analysisInFlight.Delete(userId)
+		if err != nil {
+			pa.log.With(slog.Int64("user", userId)).Error("loading messages for analysis", sl.Err(err))
+		}
 		return
 	}
 	pa.wg.Add(1)
@@ -108,22 +119,24 @@ func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(ctx context.Context, userId 
 				pa.log.With(slog.Int64("user", userId)).Error("recovered from panic", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
 			}
 		}()
-		if err := pa.AnalyzeUser(ctx, userId); err != nil {
+		if err := pa.analyze(ctx, userId, userMessages); err != nil {
 			pa.log.With(slog.Int64("user", userId)).Error("analyzing user preferences", sl.Err(err))
 		}
 	}()
 }
 
-func (pa *PreferencesAnalyzer) AnalyzeUser(ctx context.Context, userId int64) error {
+// userMessages returns the user's own messages from their dialog, or nil when
+// analysis should be skipped (preferences set manually, too little history).
+func (pa *PreferencesAnalyzer) userMessages(ctx context.Context, userId int64) ([]string, error) {
 	if existing, _ := pa.prefsStorage.GetUserPreferences(ctx, userId); existing != nil && existing.ManuallySet {
-		return nil
+		return nil, nil
 	}
 	dialogCtx, err := pa.contextStorage.GetUserContext(ctx, userId)
 	if err != nil {
-		return fmt.Errorf("getting user context: %w", err)
+		return nil, fmt.Errorf("getting user context: %w", err)
 	}
-	if dialogCtx == nil || len(dialogCtx.Messages) < minMessagesForAnalysis {
-		return nil
+	if dialogCtx == nil {
+		return nil, nil
 	}
 
 	var userMessages []string
@@ -133,9 +146,12 @@ func (pa *PreferencesAnalyzer) AnalyzeUser(ctx context.Context, userId int64) er
 		}
 	}
 	if len(userMessages) < minMessagesForAnalysis {
-		return nil
+		return nil, nil
 	}
+	return userMessages, nil
+}
 
+func (pa *PreferencesAnalyzer) analyze(ctx context.Context, userId int64, userMessages []string) error {
 	pa.log.With(slog.Int64("user", userId)).Info("starting preferences analysis",
 		slog.Int("messages", len(userMessages)))
 

@@ -22,6 +22,10 @@ import (
 
 const streamEditInterval = 400 * time.Millisecond
 
+// shutdownGrace is how long Start waits for in-flight replies; it stays under
+// systemd's default 90s stop timeout.
+const shutdownGrace = 60 * time.Second
+
 var smileEmojis = []string{
 	"😊", "😄", "😁", "🙂", "😉", "🤗", "😇", "🥰", "😎", "🤔",
 	"👀", "🙈", "🤷", "👍", "✨", "🎉", "💫", "🌟", "🔥", "💯",
@@ -94,12 +98,22 @@ func (t *TgBot) SetAccessControl(ctx context.Context, users storage.UsersStorage
 	t.seedAdmins(ctx, adminIds)
 }
 
-// Start polls for updates until ctx is cancelled, then waits for in-flight
-// replies to finish.
+// Start polls for updates until ctx is cancelled, then waits up to
+// shutdownGrace for in-flight replies to finish.
 func (t *TgBot) Start(ctx context.Context) {
 	t.api.Start(ctx)
-	t.replies.Wait()
-	t.log.Info("bot stopped")
+
+	done := make(chan struct{})
+	go func() {
+		t.replies.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.log.Info("bot stopped")
+	case <-time.After(shutdownGrace):
+		t.log.Warn("bot stopped with replies still running", slog.Duration("grace", shutdownGrace))
+	}
 }
 
 func isPrivate(chat models.Chat) bool {
@@ -297,7 +311,7 @@ func (t *TgBot) handleUpdate(ctx context.Context, _ *tg.Bot, update *models.Upda
 			if lang := t.userLanguage(ctx, incoming.From.ID, ""); lang != "" {
 				prompt = fmt.Sprintf("Answer in %s. %s", lang, args)
 			}
-			t.goSafe(func() { t.sendOneShot(ctx, chat.ID, prompt) })
+			t.goSafe(ctx, func(ctx context.Context) { t.sendOneShot(ctx, chat.ID, prompt) })
 			return
 		case "cat":
 			if args == "" {
@@ -305,7 +319,7 @@ func (t *TgBot) handleUpdate(ctx context.Context, _ *tg.Bot, update *models.Upda
 				return
 			}
 			lang := t.userLanguage(ctx, incoming.From.ID, "English")
-			t.goSafe(func() { t.sendTranslate(ctx, chat.ID, "Catalan", args, lang) })
+			t.goSafe(ctx, func(ctx context.Context) { t.sendTranslate(ctx, chat.ID, "Catalan", args, lang) })
 			return
 		case "cas":
 			if args == "" {
@@ -313,11 +327,11 @@ func (t *TgBot) handleUpdate(ctx context.Context, _ *tg.Bot, update *models.Upda
 				return
 			}
 			lang := t.userLanguage(ctx, incoming.From.ID, "English")
-			t.goSafe(func() { t.sendTranslate(ctx, chat.ID, "Spanish", args, lang) })
+			t.goSafe(ctx, func(ctx context.Context) { t.sendTranslate(ctx, chat.ID, "Spanish", args, lang) })
 			return
 		case "hello":
 			lang := t.userLanguage(ctx, incoming.From.ID, "English")
-			t.goSafe(func() {
+			t.goSafe(ctx, func(ctx context.Context) {
 				t.sendOneShot(ctx, chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang))
 			})
 			return
@@ -342,7 +356,7 @@ func (t *TgBot) handleUpdate(ctx context.Context, _ *tg.Bot, update *models.Upda
 				t.plainResponse(ctx, chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
 				return
 			}
-			t.goSafe(func() { t.SendImageResponse(ctx, chat.ID, args) })
+			t.goSafe(ctx, func(ctx context.Context) { t.SendImageResponse(ctx, chat.ID, args) })
 			return
 		case "menu":
 			if !t.requirePrivate(ctx, chat) {
@@ -390,16 +404,19 @@ func (t *TgBot) handleUpdate(ctx context.Context, _ *tg.Bot, update *models.Upda
 		slog.String("text", logText),
 	).Info("incoming message")
 
-	t.goSafe(func() { t.SendResponse(ctx, chat.ID, isPrivate(chat), question) })
+	t.goSafe(ctx, func(ctx context.Context) { t.SendResponse(ctx, chat.ID, isPrivate(chat), question) })
 }
 
 // goSafe runs fn in a tracked goroutine, logging instead of crashing on panic.
-func (t *TgBot) goSafe(fn func()) {
+// fn gets a ctx that shutdown does not cancel: Telegram has already confirmed
+// the update, so an aborted reply would never be sent. Start bounds the wait.
+func (t *TgBot) goSafe(ctx context.Context, fn func(ctx context.Context)) {
+	ctx = context.WithoutCancel(ctx)
 	t.replies.Add(1)
 	go func() {
 		defer t.replies.Done()
 		defer t.recoverPanic()
-		fn()
+		fn(ctx)
 	}()
 }
 
@@ -430,15 +447,13 @@ func (t *TgBot) SendResponse(ctx context.Context, chatId int64, private bool, re
 
 	editor := newStreamEditor(t, chatId, private)
 	editor.start(ctx)
+	// Deferred too, so a panic in AskStream doesn't leak the editor loop.
+	defer editor.stop()
 
 	resp, err := t.chat.AskStream(ctx, chatId, request, editor.update)
 	editor.stop()
 
 	if err != nil {
-		if ctx.Err() != nil {
-			t.log.With(slog.Int64("id", chatId)).Info("reply cancelled by shutdown")
-			return
-		}
 		t.log.With(slog.Int64("id", chatId)).Error("composing reply", sl.Err(err))
 		editor.deleteIfPosted(ctx)
 		t.plainResponse(ctx, chatId, errorResponse)

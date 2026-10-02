@@ -138,7 +138,9 @@ func (c *ChatGPT) AskStream(ctx context.Context, userId int64, question string, 
 }
 
 func (c *ChatGPT) askInternal(ctx context.Context, userId int64, question string, onDelta func(content string)) (core.Response, error) {
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// The timeout bounds the OpenAI request only, so a slow completion still
+	// leaves storage writes their own time.
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	if c.prefsAnalyzer != nil {
@@ -162,7 +164,7 @@ func (c *ChatGPT) askInternal(ctx context.Context, userId int64, question string
 	)
 
 	if onDelta == nil {
-		completion, err := c.client.Chat.Completions.New(ctx, params)
+		completion, err := c.client.Chat.Completions.New(reqCtx, params)
 		if err != nil {
 			return core.Response{}, fmt.Errorf("chat completion: %w", err)
 		}
@@ -182,7 +184,7 @@ func (c *ChatGPT) askInternal(ctx context.Context, userId int64, question string
 		completionTok = completion.Usage.CompletionTokens
 	} else {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
-		stream := c.client.Chat.Completions.NewStreaming(ctx, params)
+		stream := c.client.Chat.Completions.NewStreaming(reqCtx, params)
 		acc := openai.ChatCompletionAccumulator{}
 		started := time.Now()
 		var firstChunk, firstContent time.Time

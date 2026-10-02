@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand"
 	"strconv"
@@ -98,7 +99,11 @@ func (e *streamEditor) flush(ctx context.Context, lastSent *string) {
 		if err := e.sendDraft(ctx, chunks[len(chunks)-1]); err != nil {
 			e.bot.log.With(slog.Int64("id", e.chatId)).Warn("stream draft, falling back to edits", sl.Err(err))
 			e.draft = false
-			e.bot.draftsUnsupported.Store(true)
+			// Only a rejected request means drafts don't work for this bot;
+			// network errors and rate limits just affect this reply.
+			if errors.Is(err, tg.ErrorBadRequest) || errors.Is(err, tg.ErrorForbidden) {
+				e.bot.draftsUnsupported.Store(true)
+			}
 			return
 		}
 		*lastSent = cur
