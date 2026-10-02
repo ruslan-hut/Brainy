@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -123,243 +124,264 @@ func (t *TgBot) Start() error {
 	for {
 		select {
 		case update := <-updates:
-			if update.CallbackQuery != nil {
-				data := update.CallbackQuery.Data
-				switch {
-				case t.wizard != nil && strings.HasPrefix(data, callbackPrefix+":"):
-					t.wizard.handleCallback(update.CallbackQuery)
-				case strings.HasPrefix(data, adminCallbackPrefix+":"):
-					t.handleAdminCallback(update.CallbackQuery)
-				case strings.HasPrefix(data, menuCallbackPrefix+":"):
-					t.handleMenuCallback(update.CallbackQuery)
-				}
-				continue
-			}
-			if update.Message == nil {
-				continue
-			}
-
-			incoming := update.Message
-			chat := incoming.Chat
-			question := incoming.Text
-
-			if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
-				continue
-			}
-
-			// Check for non-text messages (images, voice, stickers, etc.)
-			if question == "" {
-				t.log.With(
-					slog.String("user", chat.UserName),
-					slog.Int64("id", chat.ID),
-				).Debug("non-text message received")
-				t.sendRandomEmoji(chat.ID)
-				continue
-			}
-
-			// Access control: invites only gate DMs. In groups, presence in
-			// the chat implies access — group membership is the authorization.
-			if t.users != nil && chat.IsPrivate() {
-				if incoming.IsCommand() && incoming.Command() == "start" {
-					arg := strings.TrimSpace(strings.TrimPrefix(question, "/start"))
-					t.handleStart(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, arg)
-					continue
-				}
-				if !t.isAuthorized(incoming.From.ID) {
-					if _, awaiting := t.awaiting.Load(incoming.From.ID); awaiting && !incoming.IsCommand() {
-						t.handleInviteSubmission(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, question)
-						continue
-					}
-					t.plainResponse(chat.ID, "Access is by invite only. Send /start to begin.")
-					continue
-				}
-			}
-
-			// Capture topic submission triggered from /menu.
-			if !incoming.IsCommand() {
-				if _, ok := t.awaitingTopic.LoadAndDelete(incoming.From.ID); ok {
-					topic := strings.TrimSpace(question)
-					if topic == "" {
-						t.plainResponse(chat.ID, "Topic was empty, nothing changed.")
-						continue
-					}
-					t.chat.SetTopic(chat.ID, topic)
-					t.plainResponse(chat.ID, "Topic set: "+topic)
-					continue
-				}
-			}
-
-			if incoming.IsCommand() {
-				switch incoming.Command() {
-				case "help":
-					text := "You can use the following commands:\n"
-					text += "/help - show this help\n"
-					text += "/hello - bot says random fact\n"
-					text += "/topic - set a subject of conversation\n"
-					text += "/ask - ask something or just reply on previous bot message\n"
-					text += "/cat - Catalan-English dictionary lookup\n"
-					text += "/cas - Spanish-English dictionary lookup\n"
-					text += "/imagine - generate an image from description\n"
-					text += "/clear - clear bot memory to begin new topic\n"
-					text += "/tuneup - configure tone, length, language, etc.\n"
-					text += "/menu - quick actions (set topic, clear context)\n"
-					if t.isAdmin(incoming.From.ID) {
-						text += "\nAdmin commands:\n"
-						text += "/admin - show admin menu\n"
-						text += "/gencode - generate an invite code\n"
-						text += "/codes - list invite codes\n"
-						text += "/showid - show current chat id\n"
-					}
-					t.plainResponse(chat.ID, text)
-					continue
-				case "admin":
-					if !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					target := t.adminTarget(chat, incoming)
-					msg := tgbotapi.NewMessage(target, "Admin menu:")
-					msg.ReplyMarkup = adminMenuKeyboard()
-					if _, err := t.api.Send(msg); err != nil {
-						t.log.With(slog.Int64("id", target)).Warn("admin menu", sl.Err(err))
-					}
-					continue
-				case "gencode":
-					if !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					target := t.adminTarget(chat, incoming)
-					code, err := t.generateAndSaveCode(incoming.From.ID)
-					if err != nil {
-						t.plainResponse(target, "Failed to generate code: "+err.Error())
-						continue
-					}
-					t.plainResponse(target, "New invite code: "+code)
-					continue
-				case "codes":
-					if !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					target := t.adminTarget(chat, incoming)
-					t.plainResponse(target, t.formatInviteList())
-					continue
-				case "showid":
-					if !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					sourceChatID := chat.ID
-					target := t.adminTarget(chat, incoming)
-					t.plainResponse(target, fmt.Sprintf("Chat ID: %d\nType: %s\nTitle: %s", sourceChatID, chat.Type, chat.Title))
-					continue
-				case "ask":
-					stripped := strings.TrimSpace(strings.TrimPrefix(question, "/ask"))
-					if stripped == "" {
-						t.plainResponse(chat.ID, "Please provide a question. Example: /ask what is the capital of France?")
-						continue
-					}
-					lang := t.userLanguage(incoming.From.ID, "")
-					prompt := stripped
-					if lang != "" {
-						prompt = fmt.Sprintf("Answer in %s. %s", lang, stripped)
-					}
-					go t.sendOneShot(chat.ID, prompt)
-					continue
-				case "cat":
-					word := strings.TrimSpace(strings.TrimPrefix(question, "/cat"))
-					if word == "" {
-						t.plainResponse(chat.ID, "Please provide a word. Example: /cat poma")
-						continue
-					}
-					go t.sendTranslate(chat.ID, "Catalan", word, t.userLanguage(incoming.From.ID, "English"))
-					continue
-				case "cas":
-					word := strings.TrimSpace(strings.TrimPrefix(question, "/cas"))
-					if word == "" {
-						t.plainResponse(chat.ID, "Please provide a word. Example: /cas manzana")
-						continue
-					}
-					go t.sendTranslate(chat.ID, "Spanish", word, t.userLanguage(incoming.From.ID, "English"))
-					continue
-				case "hello":
-					lang := t.userLanguage(incoming.From.ID, "English")
-					go t.sendOneShot(chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang))
-					continue
-				case "topic":
-					if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
-					if topic != "" {
-						t.chat.SetTopic(chat.ID, topic)
-						t.plainResponse(chat.ID, "Let's talk about "+topic+".")
-						continue
-					}
-					current := t.chat.GetTopic(chat.ID)
-					if current == "" {
-						t.plainResponse(chat.ID, "No topic set. Provide a subject. Example: /topic astronomy")
-						continue
-					}
-					t.sendTopicMenu(chat.ID, current)
-					continue
-				case "imagine":
-					imagePrompt := strings.TrimSpace(strings.TrimPrefix(question, "/imagine"))
-					if imagePrompt == "" {
-						t.plainResponse(chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
-						continue
-					}
-					go t.SendImageResponse(chat.ID, imagePrompt)
-					continue
-				case "menu":
-					if !t.requirePrivate(chat) {
-						continue
-					}
-					t.sendMenu(chat.ID)
-					continue
-				case "tuneup":
-					if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					if !t.requirePrivate(chat) {
-						continue
-					}
-					if t.wizard == nil {
-						t.plainResponse(chat.ID, "Tuning is not available right now.")
-						continue
-					}
-					t.wizard.start(chat.ID, incoming.From.ID)
-					continue
-				case "clear":
-					if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
-						continue
-					}
-					t.log.With(
-						slog.String("user", chat.UserName),
-						slog.Int64("id", chat.ID),
-					).Info("context cleared")
-					t.chat.ClearContext(chat.ID)
-					t.plainResponse(chat.ID, "context cleared")
-					continue
-				}
-			}
-			if t.isMentioned(incoming.Text) {
-				question = strings.ReplaceAll(question, "@"+t.botUsername, "")
-			}
-
-			logText := question
-			if len(logText) > 50 {
-				logText = logText[:50] + "..."
-			}
-			t.log.With(
-				slog.String("user", chat.UserName),
-				slog.Int64("id", chat.ID),
-				slog.String("text", logText),
-			).Info("incoming message")
-
-			go t.SendResponse(chat.ID, chat.IsPrivate(), question)
-
+			t.handleUpdate(update)
 		case <-t.stopChan:
 			t.log.Info("stopping bot gracefully")
 			return nil
 		}
+	}
+}
+
+// handleUpdate processes a single update. A panic in any handler is logged
+// and the bot keeps serving other updates.
+func (t *TgBot) handleUpdate(update tgbotapi.Update) {
+	defer t.recoverPanic()
+
+	if update.CallbackQuery != nil {
+		data := update.CallbackQuery.Data
+		switch {
+		case t.wizard != nil && strings.HasPrefix(data, callbackPrefix+":"):
+			t.wizard.handleCallback(update.CallbackQuery)
+		case strings.HasPrefix(data, adminCallbackPrefix+":"):
+			t.handleAdminCallback(update.CallbackQuery)
+		case strings.HasPrefix(data, menuCallbackPrefix+":"):
+			t.handleMenuCallback(update.CallbackQuery)
+		}
+		return
+	}
+	if update.Message == nil {
+		return
+	}
+
+	incoming := update.Message
+	chat := incoming.Chat
+	question := incoming.Text
+
+	if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
+		return
+	}
+
+	// Check for non-text messages (images, voice, stickers, etc.)
+	if question == "" {
+		t.log.With(
+			slog.String("user", chat.UserName),
+			slog.Int64("id", chat.ID),
+		).Debug("non-text message received")
+		t.sendRandomEmoji(chat.ID)
+		return
+	}
+
+	// Access control: invites only gate DMs. In groups, presence in
+	// the chat implies access — group membership is the authorization.
+	if t.users != nil && chat.IsPrivate() {
+		if incoming.IsCommand() && incoming.Command() == "start" {
+			arg := strings.TrimSpace(strings.TrimPrefix(question, "/start"))
+			t.handleStart(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, arg)
+			return
+		}
+		if !t.isAuthorized(incoming.From.ID) {
+			if _, awaiting := t.awaiting.Load(incoming.From.ID); awaiting && !incoming.IsCommand() {
+				t.handleInviteSubmission(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, question)
+				return
+			}
+			t.plainResponse(chat.ID, "Access is by invite only. Send /start to begin.")
+			return
+		}
+	}
+
+	// Capture topic submission triggered from /menu.
+	if !incoming.IsCommand() {
+		if _, ok := t.awaitingTopic.LoadAndDelete(incoming.From.ID); ok {
+			topic := strings.TrimSpace(question)
+			if topic == "" {
+				t.plainResponse(chat.ID, "Topic was empty, nothing changed.")
+				return
+			}
+			t.chat.SetTopic(chat.ID, topic)
+			t.plainResponse(chat.ID, "Topic set: "+topic)
+			return
+		}
+	}
+
+	if incoming.IsCommand() {
+		switch incoming.Command() {
+		case "help":
+			text := "You can use the following commands:\n"
+			text += "/help - show this help\n"
+			text += "/hello - bot says random fact\n"
+			text += "/topic - set a subject of conversation\n"
+			text += "/ask - ask something or just reply on previous bot message\n"
+			text += "/cat - Catalan-English dictionary lookup\n"
+			text += "/cas - Spanish-English dictionary lookup\n"
+			text += "/imagine - generate an image from description\n"
+			text += "/clear - clear bot memory to begin new topic\n"
+			text += "/tuneup - configure tone, length, language, etc.\n"
+			text += "/menu - quick actions (set topic, clear context)\n"
+			if t.isAdmin(incoming.From.ID) {
+				text += "\nAdmin commands:\n"
+				text += "/admin - show admin menu\n"
+				text += "/gencode - generate an invite code\n"
+				text += "/codes - list invite codes\n"
+				text += "/showid - show current chat id\n"
+			}
+			t.plainResponse(chat.ID, text)
+			return
+		case "admin":
+			if !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			target := t.adminTarget(chat, incoming)
+			msg := tgbotapi.NewMessage(target, "Admin menu:")
+			msg.ReplyMarkup = adminMenuKeyboard()
+			if _, err := t.api.Send(msg); err != nil {
+				t.log.With(slog.Int64("id", target)).Warn("admin menu", sl.Err(err))
+			}
+			return
+		case "gencode":
+			if !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			target := t.adminTarget(chat, incoming)
+			code, err := t.generateAndSaveCode(incoming.From.ID)
+			if err != nil {
+				t.plainResponse(target, "Failed to generate code: "+err.Error())
+				return
+			}
+			t.plainResponse(target, "New invite code: "+code)
+			return
+		case "codes":
+			if !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			target := t.adminTarget(chat, incoming)
+			t.plainResponse(target, t.formatInviteList())
+			return
+		case "showid":
+			if !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			sourceChatID := chat.ID
+			target := t.adminTarget(chat, incoming)
+			t.plainResponse(target, fmt.Sprintf("Chat ID: %d\nType: %s\nTitle: %s", sourceChatID, chat.Type, chat.Title))
+			return
+		case "ask":
+			stripped := strings.TrimSpace(strings.TrimPrefix(question, "/ask"))
+			if stripped == "" {
+				t.plainResponse(chat.ID, "Please provide a question. Example: /ask what is the capital of France?")
+				return
+			}
+			lang := t.userLanguage(incoming.From.ID, "")
+			prompt := stripped
+			if lang != "" {
+				prompt = fmt.Sprintf("Answer in %s. %s", lang, stripped)
+			}
+			t.goSafe(func() { t.sendOneShot(chat.ID, prompt) })
+			return
+		case "cat":
+			word := strings.TrimSpace(strings.TrimPrefix(question, "/cat"))
+			if word == "" {
+				t.plainResponse(chat.ID, "Please provide a word. Example: /cat poma")
+				return
+			}
+			t.goSafe(func() { t.sendTranslate(chat.ID, "Catalan", word, t.userLanguage(incoming.From.ID, "English")) })
+			return
+		case "cas":
+			word := strings.TrimSpace(strings.TrimPrefix(question, "/cas"))
+			if word == "" {
+				t.plainResponse(chat.ID, "Please provide a word. Example: /cas manzana")
+				return
+			}
+			t.goSafe(func() { t.sendTranslate(chat.ID, "Spanish", word, t.userLanguage(incoming.From.ID, "English")) })
+			return
+		case "hello":
+			lang := t.userLanguage(incoming.From.ID, "English")
+			t.goSafe(func() { t.sendOneShot(chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang)) })
+			return
+		case "topic":
+			if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
+			if topic != "" {
+				t.chat.SetTopic(chat.ID, topic)
+				t.plainResponse(chat.ID, "Let's talk about "+topic+".")
+				return
+			}
+			current := t.chat.GetTopic(chat.ID)
+			if current == "" {
+				t.plainResponse(chat.ID, "No topic set. Provide a subject. Example: /topic astronomy")
+				return
+			}
+			t.sendTopicMenu(chat.ID, current)
+			return
+		case "imagine":
+			imagePrompt := strings.TrimSpace(strings.TrimPrefix(question, "/imagine"))
+			if imagePrompt == "" {
+				t.plainResponse(chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
+				return
+			}
+			t.goSafe(func() { t.SendImageResponse(chat.ID, imagePrompt) })
+			return
+		case "menu":
+			if !t.requirePrivate(chat) {
+				return
+			}
+			t.sendMenu(chat.ID)
+			return
+		case "tuneup":
+			if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			if !t.requirePrivate(chat) {
+				return
+			}
+			if t.wizard == nil {
+				t.plainResponse(chat.ID, "Tuning is not available right now.")
+				return
+			}
+			t.wizard.start(chat.ID, incoming.From.ID)
+			return
+		case "clear":
+			if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+				return
+			}
+			t.log.With(
+				slog.String("user", chat.UserName),
+				slog.Int64("id", chat.ID),
+			).Info("context cleared")
+			t.chat.ClearContext(chat.ID)
+			t.plainResponse(chat.ID, "context cleared")
+			return
+		}
+	}
+	if t.isMentioned(incoming.Text) {
+		question = strings.ReplaceAll(question, "@"+t.botUsername, "")
+	}
+
+	logText := question
+	if len(logText) > 50 {
+		logText = logText[:50] + "..."
+	}
+	t.log.With(
+		slog.String("user", chat.UserName),
+		slog.Int64("id", chat.ID),
+		slog.String("text", logText),
+	).Info("incoming message")
+
+	t.goSafe(func() { t.SendResponse(chat.ID, chat.IsPrivate(), question) })
+}
+
+// goSafe runs fn in a goroutine, logging instead of crashing on panic.
+func (t *TgBot) goSafe(fn func()) {
+	go func() {
+		defer t.recoverPanic()
+		fn()
+	}()
+}
+
+func (t *TgBot) recoverPanic() {
+	if r := recover(); r != nil {
+		t.log.Error("recovered from panic", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
 	}
 }
 
@@ -523,7 +545,7 @@ func (t *TgBot) isMentioned(text string) bool {
 // detect if message is a reply to a message from the bot
 func (t *TgBot) isReplyToBot(message *tgbotapi.Message) bool {
 	if message.ReplyToMessage != nil {
-		return message.ReplyToMessage.From.UserName == t.botUsername
+		return message.ReplyToMessage.From != nil && message.ReplyToMessage.From.UserName == t.botUsername
 	}
 	return false
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,11 @@ func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(userId int64) {
 	go func() {
 		defer pa.wg.Done()
 		defer pa.analysisInFlight.Delete(userId)
+		defer func() {
+			if r := recover(); r != nil {
+				pa.log.With(slog.Int64("user", userId)).Error("recovered from panic", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
+			}
+		}()
 		if err := pa.AnalyzeUser(userId); err != nil {
 			pa.log.With(slog.Int64("user", userId)).Error("analyzing user preferences", sl.Err(err))
 		}

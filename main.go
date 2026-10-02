@@ -167,6 +167,11 @@ func setupLogger(env string) *slog.Logger {
 		log = slog.New(
 			slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		)
+	default:
+		log = slog.New(
+			slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		)
+		log.Warn("unknown env, using prod log level", slog.String("env", env))
 	}
 
 	return log
