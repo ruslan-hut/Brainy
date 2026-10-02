@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -36,6 +37,9 @@ type TgBot struct {
 	wizard        *wizardManager
 	botUsername   string
 	stopChan      chan struct{}
+	// draftsUnsupported is set once sendMessageDraft fails, so later replies
+	// stream by editing instead of retrying drafts.
+	draftsUnsupported atomic.Bool
 }
 
 func NewTgBot(conf *core.Config, log *slog.Logger) (*TgBot, error) {
@@ -350,7 +354,7 @@ func (t *TgBot) Start() error {
 				slog.String("text", logText),
 			).Info("incoming message")
 
-			go t.SendResponse(chat.ID, question)
+			go t.SendResponse(chat.ID, chat.IsPrivate(), question)
 
 		case <-t.stopChan:
 			t.log.Info("stopping bot gracefully")
@@ -385,10 +389,10 @@ func (t *TgBot) sendRandomEmoji(chatId int64) {
 	}
 }
 
-func (t *TgBot) SendResponse(chatId int64, request string) {
+func (t *TgBot) SendResponse(chatId int64, private bool, request string) {
 	t.sendChatAction(chatId, "typing")
 
-	editor := newStreamEditor(t, chatId)
+	editor := newStreamEditor(t, chatId, private)
 	editor.start()
 
 	resp, err := t.chat.AskStream(chatId, request, editor.update)
@@ -476,7 +480,14 @@ func (t *TgBot) generateAndSendImage(chatId int64, prompt string) {
 }
 
 func (t *TgBot) plainResponse(chatId int64, text string) {
+	for _, chunk := range splitMessage(text, maxMessageLen) {
+		t.sendFormatted(chatId, chunk)
+	}
+}
 
+// sendFormatted sends a single message-sized chunk as MarkdownV2, falling back
+// to plain text if Telegram rejects the markup.
+func (t *TgBot) sendFormatted(chatId int64, text string) {
 	// ChatGPT uses ** for bold text, so we need to replace it
 	text = strings.ReplaceAll(text, "**", "*")
 	text = strings.ReplaceAll(text, "![", "[")

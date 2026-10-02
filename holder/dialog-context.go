@@ -1,8 +1,9 @@
 package holder
 
 import (
+	"Brainy/lib/sl"
 	"Brainy/storage"
-	"log"
+	"log/slog"
 )
 
 // Message is an alias for storage.Message for backward compatibility
@@ -13,18 +14,20 @@ type DialogContext = storage.DialogContext
 
 type ContextManager struct {
 	storage storage.ContextStorage
+	log     *slog.Logger
 }
 
-func NewContextManager(store storage.ContextStorage) *ContextManager {
+func NewContextManager(store storage.ContextStorage, log *slog.Logger) *ContextManager {
 	return &ContextManager{
 		storage: store,
+		log:     log,
 	}
 }
 
 func (cm *ContextManager) GetUserContext(userId int64) *DialogContext {
 	ctx, err := cm.storage.GetUserContext(userId)
 	if err != nil {
-		log.Printf("error getting user context: %v", err)
+		cm.log.With(slog.Int64("user", userId)).Error("getting user context", sl.Err(err))
 		return nil
 	}
 	return ctx
@@ -32,25 +35,25 @@ func (cm *ContextManager) GetUserContext(userId int64) *DialogContext {
 
 func (cm *ContextManager) UpdateUserContext(userId int64, message Message) {
 	if err := cm.storage.UpdateUserContext(userId, message); err != nil {
-		log.Printf("error updating user context: %v", err)
+		cm.log.With(slog.Int64("user", userId)).Error("updating user context", sl.Err(err))
 	}
 }
 
 func (cm *ContextManager) SetTokens(userId int64, total int) {
 	if err := cm.storage.SetTokens(userId, total); err != nil {
-		log.Printf("error setting tokens: %v", err)
+		cm.log.With(slog.Int64("user", userId)).Error("setting tokens", sl.Err(err))
 	}
 }
 
 func (cm *ContextManager) SetTopic(userId int64, topic string) {
 	if err := cm.storage.SetTopic(userId, topic); err != nil {
-		log.Printf("error setting topic: %v", err)
+		cm.log.With(slog.Int64("user", userId)).Error("setting topic", sl.Err(err))
 	}
 }
 
 func (cm *ContextManager) ClearUserContext(userId int64) {
 	if err := cm.storage.ClearUserContext(userId); err != nil {
-		log.Printf("error clearing user context: %v", err)
+		cm.log.With(slog.Int64("user", userId)).Error("clearing user context", sl.Err(err))
 	}
 }
 

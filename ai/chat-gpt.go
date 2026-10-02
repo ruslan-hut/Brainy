@@ -31,10 +31,11 @@ type ChatGPT struct {
 }
 
 func NewChat(conf *core.Config, log *slog.Logger, store storage.ContextStorage) *ChatGPT {
+	log = log.With(sl.Module("chat-gpt"))
 	return &ChatGPT{
 		conf:           conf,
-		log:            log.With(sl.Module("chat-gpt")),
-		contextManager: holder.NewContextManager(store),
+		log:            log,
+		contextManager: holder.NewContextManager(store, log),
 		client:         openai.NewClient(option.WithAPIKey(conf.OpenAIApiKey)),
 		tools:          buildTools(),
 	}

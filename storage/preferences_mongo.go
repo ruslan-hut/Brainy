@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const preferencesCollectionName = "user_preferences"
@@ -91,7 +91,7 @@ func (m *MongoPreferencesStorage) UpdateLastMessageTime(userId int64) error {
 		},
 	}
 
-	opts := options.Update().SetUpsert(true)
+	opts := options.UpdateOne().SetUpsert(true)
 	_, err := m.collection.UpdateOne(ctx, bson.M{"user_id": userId}, update, opts)
 	return err
 }
