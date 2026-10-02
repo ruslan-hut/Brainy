@@ -1,65 +1,111 @@
 # Brainy
-## Telegram Chatbot with OpenAI GPT
 
-This project is a Telegram Chatbot that uses OpenAI's GPT language model to generate responses to user messages. The bot can be used in both private conversations and group chats.
+A Telegram chatbot backed by OpenAI. It keeps a per-chat conversation history, streams replies as they are generated, draws images on request, and adapts its tone to each user. It works in private chats (invite-only) and in groups.
+
+## Features
+
+- **Conversations with memory** — each chat keeps its own history (trimmed to the most recent ~20,000 tokens), with an optional topic that steers the conversation.
+- **Streaming replies** — in private chats replies stream as a native Telegram draft; in groups the bot posts a message and updates it as text arrives. Long answers are split across several messages.
+- **Image generation** — `/imagine <description>`, or just ask for a picture in conversation and the model decides to draw one.
+- **Personalisation** — the bot infers each user's language, tone and preferred detail level from their messages, or the user sets them with the `/tuneup` wizard.
+- **Dictionary lookups** — Catalan and Spanish word articles with translation, grammar and examples, written in the user's language.
+- **Invite-only access** — private chats require an invite code; admins generate and list codes from the bot. In groups, membership is the access check.
+- **Storage** — MongoDB for persistence, or in memory for local runs.
 
 ## Requirements
 
-To use this Chatbot, you'll need the following:
+- Go 1.25+
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+- An OpenAI API key
+- MongoDB (optional; without it everything is kept in memory and lost on restart)
 
-- A Telegram account
-- A Telegram bot token (you can get one by talking to the BotFather)
-- An OpenAI API key (you can get one by signing up for OpenAI's GPT service)
+## Quick start
 
-## Installation
+1. Clone the repository.
+2. Edit `config.yml` — at minimum set `telegram_api_key`, `openai_api_key` and `username` (the bot's username without `@`). Add your Telegram user ID to `admin_user_ids` so you can generate invite codes.
+3. Run:
 
-To install and run the Chatbot, follow these steps:
+   ```bash
+   go run main.go                       # uses ./config.yml
+   go run main.go -conf /path/to/config.yml
+   ```
 
-1. Clone this repository to your local machine.
-2. Install the required dependencies using `go get`
+4. Open a chat with the bot, send `/start`, then `/gencode` (as admin) to create invite codes for other users.
 
-> go get github.com/go-telegram-bot-api/telegram-bot-api
+## Configuration
 
-3. Set the following environment variables in `config.yml`:
+| Key | Default | Description |
+|---|---|---|
+| `env` | `local` | `local` / `dev` log at debug level, `prod` at info |
+| `telegram_api_key` | — | Bot token from BotFather |
+| `openai_api_key` | — | OpenAI API key |
+| `username` | — | Bot username, used to detect mentions in groups |
+| `model` | `gpt-6-luna` | Chat model |
+| `reasoning_effort` | `low` | Reasoning effort for `/ask`, `/hello`, dictionary lookups and preference analysis; leave empty to use the model's default. Regular chat always uses `none`, which tool calling requires |
+| `image_model` | `gpt-image-2` | Image model (`gpt-image-*`) |
+| `image_size` | `1024x1024` | Generated image size |
+| `image_style` | cartoon style | Text appended to every image prompt |
+| `admin_user_ids` | — | Telegram user IDs registered as admins on startup |
+| `mongo.enabled` | `false` | Use MongoDB; if the connection fails the bot falls back to memory |
+| `mongo.host`, `port`, `user`, `password`, `database` | — | MongoDB connection; the user authenticates against `database` |
 
-> telegram_api_key: your-Telegram-bot-token
->
-> openai_api_key: your-OpenAI-API-key
+## Commands
 
-4. Start the Chatbot by running the following command:
+| Command | Description |
+|---|---|
+| `/start [code]` | Register with an invite code (private chats) |
+| `/help` | List commands |
+| `/ask <question>` | One-off question without conversation history. In private chats you can just write |
+| `/topic [subject]` | Set the conversation subject; without a subject, show the current one with change/clear buttons |
+| `/clear` | Forget the conversation and topic |
+| `/imagine <description>` | Generate an image |
+| `/cat <word>`, `/cas <word>` | Catalan / Spanish dictionary article |
+| `/hello` | A random science fact |
+| `/menu` | Quick actions: set topic, clear context (private chats) |
+| `/tuneup` | Set language, tone, length, humour and technical level (private chats) |
 
-> go run main.go
+Admin commands — replies always go to the admin's private chat:
 
-## Usage
+| Command | Description |
+|---|---|
+| `/admin` | Admin menu |
+| `/gencode` | Generate an invite code |
+| `/codes` | List recent invite codes and who used them |
+| `/showid` | Show the current chat's ID and type |
 
-Start new chat with the bot by sending a message to it. The bot will respond with a generated message. You can also add the bot to a group chat and it will respond to messages in the group. 
-For every user or chat ID bot stores some context, size of the context is defined by `maxTokens` parameter in a `ContextManager`.
-Bot recognizes commands in the following format:
+### Groups
 
-ask regular question to the bot, you don`t need to use this command in a private chat, just ask a question
-> /ask _question_
+In a group the bot answers commands, messages that mention it (`@username`), and replies to its own messages. `/topic` and `/clear` are limited to admins there, since they affect the whole group's conversation.
 
-set a topic or subject for the bot to talk about, this will be added to the beginning of the generated prompts 
-> /topic _some subject_
+### Personalisation
 
-clear the cashed context and topic
-> /clear
+Preferences are analysed from the user's messages once a day for users with new activity, and again whenever they run `/clear`. Preferences set with `/tuneup` are never overwritten by the analysis.
 
-some experimental features to use ChatGPT as a word translator
-> /cat _translate word from Catalan to English_
-> 
-> /cas _translate word from Spanish to English_
+## Development
 
-bot will respond with a random fact
-> /hello
+```bash
+go test -short -race ./...                                          # unit tests
+MONGO_TEST_URI=mongodb://127.0.0.1:27017 go test -race ./storage/   # MongoDB integration tests
+```
 
-bot will respond with a help message, describing the commands
-> /help
+The integration tests create and drop a temporary database. A throwaway server is enough:
+
+```bash
+docker run -d --rm -p 27017:27017 mongo:7
+```
+
+## Deployment
+
+Pushing to `master` runs `.github/workflows/deploy.yml`, which:
+
+1. fills `brainy.yml` from repository secrets and copies it to `/etc/conf/` on the server;
+2. builds the binary and copies it to `/usr/local/bin/brainy`;
+3. restarts `brainy.service` (the systemd unit lives on the server, not in this repo).
+
+Required secrets: `TELEGRAM_API_KEY`, `OPENAI_API_KEY`, `BOT_USERNAME`, `MONGO_HOST`, `MONGO_PORT`, `MONGO_USER`, `MONGO_PASSWORD`, `MONGO_DATABASE`, `SERVER_IP`, `SERVER_USER`, `SSH_PRIVATE_KEY`.
+
+On `SIGTERM` the bot stops taking new messages and gives replies already in progress up to 60 seconds to finish.
 
 ## License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
-
-## Acknowledgements
-
-This project was inspired by OpenAI's GPT language model and the Telegram Bot API. Thanks to both projects for their great work!

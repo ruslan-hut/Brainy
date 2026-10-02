@@ -18,6 +18,8 @@ go test -short -race ./...
 MONGO_TEST_URI=mongodb://127.0.0.1:27017 go test -race ./storage/
 ```
 
+Requires Go 1.25 (`go.mod`; the deploy workflow reads the version from it). Tests that need OpenAI point the SDK at an `httptest` server via `OPENAI_BASE_URL` — see `ai/preferences_analyzer_test.go`.
+
 Pushing to `master` deploys to production (`.github/workflows/deploy.yml` builds, copies `brainy.yml` with secrets substituted, restarts `brainy.service`).
 
 ## Configuration
@@ -38,7 +40,7 @@ Telegram bot (`github.com/go-telegram/bot`, imported as `tg`) backed by the Open
 - **main.go**: entry point; wires storages, `ai.ChatGPT`, `ai.PreferencesAnalyzer`, `bot.TgBot`. The root `ctx` comes from `signal.NotifyContext`; shutdown order is `TgBot.Start` returning (after in-flight replies) → `PreferencesAnalyzer.Wait` → storage `Close`
 - **core/**: config singleton and the `ChatService` interface the bot depends on
 - **ai/chat-gpt.go**: chat (streaming, with a `generate_image` function tool), one-shot prompts, translations, image generation
-- **ai/preferences_analyzer.go**: background job inferring user preferences via structured output; injected into the system prompt
+- **ai/preferences_analyzer.go**: infers user preferences via structured output; injected into the system prompt. Runs hourly for users with new messages since their last analysis (at most once per 24h) and on `/clear`. `TriggerAnalysisAsync` reads the dialog synchronously before spawning, so callers may clear it immediately. Preferences with `ManuallySet` (from `/tuneup`) are never overwritten
 - **bot/**: update loop and commands (`tgbot.go`), streaming output (`stream-editor.go`), message splitting (`message-split.go`), `/menu`, `/tuneup` wizard, admin/invite handling
 - **holder/**: thin wrapper over `storage.ContextStorage` for dialog history
 - **storage/**: MongoDB (driver v2) and in-memory implementations for dialog contexts (trimmed at 20000 tokens), preferences, users, invites
@@ -69,14 +71,16 @@ Every storage, `holder`, `ai` and `ChatService` method takes `ctx` first (except
 
 ## Bot Commands
 
+When adding or changing a command, update the `/help` text in `bot/tgbot.go`, this list, and the tables in `README.md`.
+
 - `/start [code]` — invite-code onboarding (private chats are invite-only; groups are open to members)
 - `/ask <question>` — one-shot question (plain messages work in private chats)
-- `/topic <subject>` — set conversation subject; without args shows the topic menu
-- `/clear` — clear conversation context and topic (triggers preferences analysis)
+- `/topic <subject>` — set conversation subject; without args shows the topic menu (admin-only in groups)
+- `/clear` — clear conversation context and topic, triggers preferences analysis (admin-only in groups)
 - `/cat <word>`, `/cas <word>` — Catalan/Spanish dictionary article in the user's language
 - `/hello` — random science fact in the user's language
 - `/imagine <prompt>` — generate an image
-- `/menu`, `/tuneup` (preferences wizard), `/help`
+- `/menu`, `/tuneup` (preferences wizard) — private chats only; `/help`
 - Admin: `/admin`, `/gencode`, `/codes`, `/showid` — responses go to the admin's DM
 
 ### Group Chat Behavior

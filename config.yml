@@ -4,7 +4,13 @@ env: local
 telegram_api_key: YOUR_TELEGRAM_API_KEY
 openai_api_key: YOUR_OPENAI_API_KEY
 username: BOT_USERNAME
-model: gpt-model
+model: gpt-6-luna
+reasoning_effort: low
+image_model: gpt-image-2
+image_size: 1024x1024
+# image_style: ". Style: watercolor"   # appended to every image prompt; omit for the default cartoon style
+admin_user_ids:
+  - 123456789
 mongo:
   enabled: false
   host: 127.0.0.1
