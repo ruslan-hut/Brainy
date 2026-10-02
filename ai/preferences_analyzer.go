@@ -182,8 +182,9 @@ Fields to populate:
 - response_length: short, medium, or long`, strings.Join(userMessages, "\n---\n"))
 
 	completion, err := pa.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:    openai.ChatModel(pa.conf.Model),
-		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
+		Model:           openai.ChatModel(pa.conf.Model),
+		Messages:        []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
+		ReasoningEffort: shared.ReasoningEffort(pa.conf.ReasoningEffort),
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{

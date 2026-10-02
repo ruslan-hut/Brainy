@@ -51,6 +51,7 @@ func encodingForUnknownModel(model string) string {
 	case strings.HasPrefix(model, "gpt-4o"),
 		strings.HasPrefix(model, "gpt-4.1"),
 		strings.HasPrefix(model, "gpt-5"),
+		strings.HasPrefix(model, "gpt-6"),
 		strings.HasPrefix(model, "o1"),
 		strings.HasPrefix(model, "o3"):
 		return "o200k_base"

@@ -88,25 +88,18 @@ func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
 	c.prefsAnalyzer = pa
 }
 
-// GenerateImage generates an image using the configured image model and returns
-// the raw image bytes (PNG). Works with gpt-image-* (always b64) and dall-e-*
-// (forced to b64 via response_format).
+// GenerateImage generates an image using the configured gpt-image-* model and
+// returns the raw image bytes (PNG).
 func (c *ChatGPT) GenerateImage(userId int64, prompt string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	params := openai.ImageGenerateParams{
+	resp, err := c.client.Images.Generate(ctx, openai.ImageGenerateParams{
 		Prompt: prompt + c.conf.ImageStyle,
 		Model:  openai.ImageModel(c.conf.ImageModel),
 		Size:   openai.ImageGenerateParamsSize(c.conf.ImageSize),
 		N:      openai.Int(1),
-	}
-	// gpt-image-* always returns b64 and rejects response_format.
-	if !strings.HasPrefix(c.conf.ImageModel, "gpt-image") {
-		params.ResponseFormat = openai.ImageGenerateParamsResponseFormatB64JSON
-	}
-
-	resp, err := c.client.Images.Generate(ctx, params)
+	})
 	if err != nil {
 		c.log.With(slog.Int64("user", userId)).Error("image generation", sl.Err(err))
 		return nil, fmt.Errorf("image generation: %w", err)
@@ -155,6 +148,8 @@ func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(conten
 		Model:    openai.ChatModel(c.conf.Model),
 		Messages: c.buildMessages(userId, question),
 		Tools:    c.tools,
+		// Chat Completions allows function calling only with reasoning off.
+		ReasoningEffort: shared.ReasoningEffortNone,
 	}
 
 	var (
@@ -284,8 +279,9 @@ func (c *ChatGPT) OneShot(prompt string) (string, error) {
 	defer cancel()
 
 	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:    openai.ChatModel(c.conf.Model),
-		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
+		Model:           openai.ChatModel(c.conf.Model),
+		Messages:        []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
+		ReasoningEffort: shared.ReasoningEffort(c.conf.ReasoningEffort),
 	})
 	if err != nil {
 		return "", fmt.Errorf("chat completion: %w", err)
