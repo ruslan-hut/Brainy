@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // InviteCode is a one-time-use code that grants service access.
 type InviteCode struct {
@@ -16,11 +19,11 @@ func (i *InviteCode) Used() bool { return i.UsedBy != 0 }
 
 // InvitesStorage persists invite codes.
 type InvitesStorage interface {
-	GetInvite(code string) (*InviteCode, error)
-	SaveInvite(invite *InviteCode) error
+	GetInvite(ctx context.Context, code string) (*InviteCode, error)
+	SaveInvite(ctx context.Context, invite *InviteCode) error
 	// RedeemInvite atomically marks code as used by userId.
 	// Returns (false, nil) if code does not exist or is already used.
-	RedeemInvite(code string, userId int64) (bool, error)
-	ListInvites(limit int) ([]*InviteCode, error)
+	RedeemInvite(ctx context.Context, code string, userId int64) (bool, error)
+	ListInvites(ctx context.Context, limit int) ([]*InviteCode, error)
 	Close() error
 }

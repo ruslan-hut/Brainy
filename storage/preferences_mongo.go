@@ -21,10 +21,10 @@ type MongoPreferencesStorage struct {
 }
 
 // NewMongoPreferencesStorage creates a new MongoDB preferences storage
-func NewMongoPreferencesStorage(client *mongo.Client, database string, log *slog.Logger) (*MongoPreferencesStorage, error) {
+func NewMongoPreferencesStorage(ctx context.Context, client *mongo.Client, database string, log *slog.Logger) (*MongoPreferencesStorage, error) {
 	collection := client.Database(database).Collection(preferencesCollectionName)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Create unique index on user_id
@@ -44,8 +44,8 @@ func NewMongoPreferencesStorage(client *mongo.Client, database string, log *slog
 }
 
 // GetUserPreferences retrieves preferences for a user
-func (m *MongoPreferencesStorage) GetUserPreferences(userId int64) (*UserPreferences, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoPreferencesStorage) GetUserPreferences(ctx context.Context, userId int64) (*UserPreferences, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var prefs UserPreferences
@@ -60,8 +60,8 @@ func (m *MongoPreferencesStorage) GetUserPreferences(userId int64) (*UserPrefere
 }
 
 // SaveUserPreferences creates or updates user preferences
-func (m *MongoPreferencesStorage) SaveUserPreferences(prefs *UserPreferences) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoPreferencesStorage) SaveUserPreferences(ctx context.Context, prefs *UserPreferences) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	prefs.UpdatedAt = time.Now()
@@ -75,8 +75,8 @@ func (m *MongoPreferencesStorage) SaveUserPreferences(prefs *UserPreferences) er
 }
 
 // UpdateLastMessageTime updates the LastMessageAt timestamp
-func (m *MongoPreferencesStorage) UpdateLastMessageTime(userId int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoPreferencesStorage) UpdateLastMessageTime(ctx context.Context, userId int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	now := time.Now()
@@ -97,8 +97,8 @@ func (m *MongoPreferencesStorage) UpdateLastMessageTime(userId int64) error {
 }
 
 // GetUsersNeedingAnalysis returns users who need preference analysis
-func (m *MongoPreferencesStorage) GetUsersNeedingAnalysis(cutoffDuration time.Duration) ([]int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (m *MongoPreferencesStorage) GetUsersNeedingAnalysis(ctx context.Context, cutoffDuration time.Duration) ([]int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cutoffTime := time.Now().Add(-cutoffDuration)

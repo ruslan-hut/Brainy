@@ -7,6 +7,7 @@ import (
 	"Brainy/lib/sl"
 	"Brainy/lib/tokens"
 	"Brainy/storage"
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,9 @@ func main() {
 
 	configPath := flag.String("conf", "config.yml", "path to config file")
 	flag.Parse()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	conf := core.MustLoad(*configPath)
 	log := setupLogger(conf.Env)
@@ -54,7 +58,7 @@ func main() {
 			conf.Mongo.Host, conf.Mongo.Port,
 			conf.Mongo.Database, conf.Mongo.Database)
 		var err error
-		mongoStore, err = storage.NewMongoStorage(mongoURI, conf.Mongo.Database, log)
+		mongoStore, err = storage.NewMongoStorage(ctx, mongoURI, conf.Mongo.Database, log)
 		if err != nil {
 			log.With(
 				slog.String("db", conf.Mongo.Database),
@@ -69,6 +73,7 @@ func main() {
 			store = mongoStore
 			// Initialize preferences storage with shared MongoDB client
 			prefsStore, err = storage.NewMongoPreferencesStorage(
+				ctx,
 				mongoStore.GetClient(),
 				mongoStore.GetDatabase(),
 				log,
@@ -77,12 +82,12 @@ func main() {
 				log.Warn("preferences storage fallback to memory", sl.Err(err))
 				prefsStore = storage.NewMemoryPreferencesStorage()
 			}
-			usersStore, err = storage.NewMongoUsersStorage(mongoStore.GetClient(), mongoStore.GetDatabase(), log)
+			usersStore, err = storage.NewMongoUsersStorage(ctx, mongoStore.GetClient(), mongoStore.GetDatabase(), log)
 			if err != nil {
 				log.Warn("users storage fallback to memory", sl.Err(err))
 				usersStore = storage.NewMemoryUsersStorage()
 			}
-			invitesStore, err = storage.NewMongoInvitesStorage(mongoStore.GetClient(), mongoStore.GetDatabase(), log)
+			invitesStore, err = storage.NewMongoInvitesStorage(ctx, mongoStore.GetClient(), mongoStore.GetDatabase(), log)
 			if err != nil {
 				log.Warn("invites storage fallback to memory", sl.Err(err))
 				invitesStore = storage.NewMemoryInvitesStorage()
@@ -102,7 +107,7 @@ func main() {
 	// Initialize preferences analyzer
 	prefsAnalyzer := ai.NewPreferencesAnalyzer(conf, log, store, prefsStore)
 	chat.SetPreferencesAnalyzer(prefsAnalyzer)
-	prefsAnalyzer.StartBackgroundAnalysis()
+	prefsAnalyzer.Start(ctx)
 	tgBot, err := bot.NewTgBot(conf, log)
 	if err != nil {
 		log.Error("creating telegram", sl.Err(err))
@@ -111,28 +116,13 @@ func main() {
 
 	tgBot.SetChat(chat)
 	tgBot.SetPreferences(prefsStore)
-	tgBot.SetAccessControl(usersStore, invitesStore, conf.AdminUserIds)
-
-	// Setup signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Start bot in goroutine
-	go func() {
-		if err := tgBot.Start(); err != nil {
-			log.Error("bot stopped with error", sl.Err(err))
-		}
-	}()
+	tgBot.SetAccessControl(ctx, usersStore, invitesStore, conf.AdminUserIds)
 
 	log.Info("bot started")
-
-	// Wait for shutdown signal
-	sig := <-sigChan
-	log.Info("received signal, shutting down", slog.String("signal", sig.String()))
-
-	// Graceful shutdown
-	tgBot.Stop()
-	prefsAnalyzer.Stop()
+	// Blocks until SIGINT/SIGTERM, then until in-flight replies have exited.
+	tgBot.Start(ctx)
+	log.Info("shutting down")
+	prefsAnalyzer.Wait()
 
 	// Close storage connection
 	if err := chat.Close(); err != nil {

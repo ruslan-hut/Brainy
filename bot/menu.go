@@ -2,92 +2,89 @@ package bot
 
 import (
 	"Brainy/lib/sl"
+	"context"
 	"log/slog"
 	"strings"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 const menuCallbackPrefix = "menu"
 
 // menuKeyboard is the top-level user menu shown by /menu.
-func menuKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Set topic", menuCallbackPrefix+":topic"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Clear context", menuCallbackPrefix+":clear"),
-		),
-	)
+func menuKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: "Set topic", CallbackData: menuCallbackPrefix + ":topic"}},
+		{{Text: "Clear context", CallbackData: menuCallbackPrefix + ":clear"}},
+	}}
 }
 
 // sendMenu posts the /menu inline keyboard.
-func (t *TgBot) sendMenu(chatID int64) {
-	msg := tgbotapi.NewMessage(chatID, "Menu:")
-	msg.ReplyMarkup = menuKeyboard()
-	if _, err := t.api.Send(msg); err != nil {
+func (t *TgBot) sendMenu(ctx context.Context, chatID int64) {
+	if _, err := t.api.SendMessage(ctx, &tg.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "Menu:",
+		ReplyMarkup: menuKeyboard(),
+	}); err != nil {
 		t.log.With(slog.Int64("id", chatID)).Warn("sending menu", sl.Err(err))
 	}
 }
 
 // handleMenuCallback dispatches user menu button taps.
-func (t *TgBot) handleMenuCallback(cb *tgbotapi.CallbackQuery) {
-	defer func() {
-		if _, err := t.api.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
-			t.log.Debug("answering menu callback", sl.Err(err))
-		}
-	}()
+func (t *TgBot) handleMenuCallback(ctx context.Context, cb *models.CallbackQuery) {
+	defer t.answerCallback(ctx, cb.ID)
 
 	parts := strings.SplitN(cb.Data, ":", 2)
-	if len(parts) != 2 {
+	msg := cb.Message.Message
+	if len(parts) != 2 || msg == nil {
 		return
 	}
-	chatID := cb.Message.Chat.ID
-	msgID := cb.Message.MessageID
+	chatID := msg.Chat.ID
+	msgID := msg.ID
 	userID := cb.From.ID
 
 	switch parts[1] {
 	case "topic":
 		t.awaitingTopic.Store(userID, struct{}{})
-		t.editPlain(chatID, msgID, "Send me the new topic.")
+		t.editPlain(ctx, chatID, msgID, "Send me the new topic.")
 	case "clear":
-		t.chat.ClearContext(chatID)
+		t.chat.ClearContext(ctx, chatID)
 		t.log.With(slog.Int64("user", userID)).Info("context cleared via menu")
-		t.editPlain(chatID, msgID, "Context cleared.")
+		t.editPlain(ctx, chatID, msgID, "Context cleared.")
 	case "topic_change":
 		t.awaitingTopic.Store(userID, struct{}{})
-		t.editPlain(chatID, msgID, "Send me the new topic.")
+		t.editPlain(ctx, chatID, msgID, "Send me the new topic.")
 	case "topic_clear":
-		t.chat.SetTopic(chatID, "")
-		t.editPlain(chatID, msgID, "Topic cleared.")
+		t.chat.SetTopic(ctx, chatID, "")
+		t.editPlain(ctx, chatID, msgID, "Topic cleared.")
 	case "topic_exit":
-		current := t.chat.GetTopic(chatID)
+		current := t.chat.GetTopic(ctx, chatID)
 		if current == "" {
-			t.editPlain(chatID, msgID, "No topic set.")
+			t.editPlain(ctx, chatID, msgID, "No topic set.")
 			return
 		}
-		t.editPlain(chatID, msgID, "Topic kept: "+current)
+		t.editPlain(ctx, chatID, msgID, "Topic kept: "+current)
 	}
 }
 
 // sendTopicMenu shows the current topic with Change/Clear/Exit buttons.
-func (t *TgBot) sendTopicMenu(chatID int64, current string) {
-	msg := tgbotapi.NewMessage(chatID, "Current topic: "+current)
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Change", menuCallbackPrefix+":topic_change"),
-			tgbotapi.NewInlineKeyboardButtonData("Clear", menuCallbackPrefix+":topic_clear"),
-			tgbotapi.NewInlineKeyboardButtonData("Exit", menuCallbackPrefix+":topic_exit"),
-		),
-	)
-	if _, err := t.api.Send(msg); err != nil {
+func (t *TgBot) sendTopicMenu(ctx context.Context, chatID int64, current string) {
+	if _, err := t.api.SendMessage(ctx, &tg.SendMessageParams{
+		ChatID: chatID,
+		Text:   "Current topic: " + current,
+		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+			{Text: "Change", CallbackData: menuCallbackPrefix + ":topic_change"},
+			{Text: "Clear", CallbackData: menuCallbackPrefix + ":topic_clear"},
+			{Text: "Exit", CallbackData: menuCallbackPrefix + ":topic_exit"},
+		}}},
+	}); err != nil {
 		t.log.With(slog.Int64("id", chatID)).Warn("sending topic menu", sl.Err(err))
 	}
 }
 
-func (t *TgBot) editPlain(chatID int64, msgID int, text string) {
-	if _, err := t.api.Send(tgbotapi.NewEditMessageText(chatID, msgID, text)); err != nil {
+func (t *TgBot) editPlain(ctx context.Context, chatID int64, msgID int, text string) {
+	if _, err := t.api.EditMessageText(ctx, &tg.EditMessageTextParams{ChatID: chatID, MessageID: msgID, Text: text}); err != nil {
 		t.log.With(slog.Int64("id", chatID)).Debug("menu edit", sl.Err(err))
 	}
 }

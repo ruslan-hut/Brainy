@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
@@ -19,13 +20,13 @@ func NewMemoryStorage() *MemoryStorage {
 	}
 }
 
-func (m *MemoryStorage) GetUserContext(userId int64) (*DialogContext, error) {
+func (m *MemoryStorage) GetUserContext(ctx context.Context, userId int64) (*DialogContext, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 	return m.contexts[userId], nil
 }
 
-func (m *MemoryStorage) UpdateUserContext(userId int64, message Message) error {
+func (m *MemoryStorage) UpdateUserContext(ctx context.Context, userId int64, message Message) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -55,7 +56,7 @@ func (m *MemoryStorage) UpdateUserContext(userId int64, message Message) error {
 	return nil
 }
 
-func (m *MemoryStorage) SetTokens(userId int64, total int) error {
+func (m *MemoryStorage) SetTokens(ctx context.Context, userId int64, total int) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	if context, ok := m.contexts[userId]; ok {
@@ -64,7 +65,7 @@ func (m *MemoryStorage) SetTokens(userId int64, total int) error {
 	return nil
 }
 
-func (m *MemoryStorage) SetTopic(userId int64, topic string) error {
+func (m *MemoryStorage) SetTopic(ctx context.Context, userId int64, topic string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -82,7 +83,7 @@ func (m *MemoryStorage) SetTopic(userId int64, topic string) error {
 	return nil
 }
 
-func (m *MemoryStorage) ClearUserContext(userId int64) error {
+func (m *MemoryStorage) ClearUserContext(ctx context.Context, userId int64) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	delete(m.contexts, userId)

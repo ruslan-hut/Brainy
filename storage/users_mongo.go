@@ -18,10 +18,10 @@ type MongoUsersStorage struct {
 	log        *slog.Logger
 }
 
-func NewMongoUsersStorage(client *mongo.Client, database string, log *slog.Logger) (*MongoUsersStorage, error) {
+func NewMongoUsersStorage(ctx context.Context, client *mongo.Client, database string, log *slog.Logger) (*MongoUsersStorage, error) {
 	collection := client.Database(database).Collection(usersCollectionName)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	_, err := collection.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -35,8 +35,8 @@ func NewMongoUsersStorage(client *mongo.Client, database string, log *slog.Logge
 	return &MongoUsersStorage{collection: collection, log: log}, nil
 }
 
-func (m *MongoUsersStorage) GetUser(userId int64) (*User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoUsersStorage) GetUser(ctx context.Context, userId int64) (*User, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var u User
 	err := m.collection.FindOne(ctx, bson.M{"user_id": userId}).Decode(&u)
@@ -49,8 +49,8 @@ func (m *MongoUsersStorage) GetUser(userId int64) (*User, error) {
 	return &u, nil
 }
 
-func (m *MongoUsersStorage) SaveUser(user *User) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoUsersStorage) SaveUser(ctx context.Context, user *User) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if user.JoinedAt.IsZero() {
 		user.JoinedAt = time.Now()
@@ -60,8 +60,8 @@ func (m *MongoUsersStorage) SaveUser(user *User) error {
 	return err
 }
 
-func (m *MongoUsersStorage) ListUsers() ([]*User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (m *MongoUsersStorage) ListUsers(ctx context.Context) ([]*User, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cursor, err := m.collection.Find(ctx, bson.M{})
 	if err != nil {

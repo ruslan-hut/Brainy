@@ -2,6 +2,7 @@ package bot
 
 import (
 	"Brainy/storage"
+	"context"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -11,7 +12,8 @@ import (
 
 	"Brainy/lib/sl"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 // callbackPrefix identifies callback queries that belong to the tuneup wizard.
@@ -101,11 +103,11 @@ type wizardManager struct {
 	mu       sync.Mutex
 	sessions map[int64]*wizardSession
 	prefs    storage.PreferencesStorage
-	api      *tgbotapi.BotAPI
+	api      *tg.Bot
 	log      *slog.Logger
 }
 
-func newWizardManager(api *tgbotapi.BotAPI, prefs storage.PreferencesStorage, log *slog.Logger) *wizardManager {
+func newWizardManager(api *tg.Bot, prefs storage.PreferencesStorage, log *slog.Logger) *wizardManager {
 	return &wizardManager{
 		sessions: make(map[int64]*wizardSession),
 		prefs:    prefs,
@@ -115,21 +117,23 @@ func newWizardManager(api *tgbotapi.BotAPI, prefs storage.PreferencesStorage, lo
 }
 
 // start begins or restarts a tuneup session for userID in chatID.
-func (w *wizardManager) start(chatID, userID int64) {
+func (w *wizardManager) start(ctx context.Context, chatID, userID int64) {
 	if w.prefs == nil {
-		w.send(chatID, "Preferences storage is not configured.")
+		w.send(ctx, chatID, "Preferences storage is not configured.")
 		return
 	}
-	existing, _ := w.prefs.GetUserPreferences(userID)
+	existing, _ := w.prefs.GetUserPreferences(ctx, userID)
 	prefs := &storage.UserPreferences{UserId: userID, CreatedAt: time.Now()}
 	if existing != nil {
 		*prefs = *existing
 	}
 	prefs.ManuallySet = true
 
-	msg := tgbotapi.NewMessage(chatID, wizardSteps[0].prompt)
-	msg.ReplyMarkup = buildKeyboard(0, wizardSteps[0].options)
-	sent, err := w.api.Send(msg)
+	sent, err := w.api.SendMessage(ctx, &tg.SendMessageParams{
+		ChatID:      chatID,
+		Text:        wizardSteps[0].prompt,
+		ReplyMarkup: buildKeyboard(0, wizardSteps[0].options),
+	})
 	if err != nil {
 		w.log.With(slog.Int64("user", userID)).Error("starting wizard", sl.Err(err))
 		return
@@ -139,7 +143,7 @@ func (w *wizardManager) start(chatID, userID int64) {
 	w.sessions[userID] = &wizardSession{
 		ownerID:   userID,
 		chatID:    chatID,
-		messageID: sent.MessageID,
+		messageID: sent.ID,
 		step:      0,
 		prefs:     prefs,
 	}
@@ -147,10 +151,10 @@ func (w *wizardManager) start(chatID, userID int64) {
 }
 
 // handleCallback is called for every CallbackQuery whose data starts with callbackPrefix.
-func (w *wizardManager) handleCallback(cb *tgbotapi.CallbackQuery) {
+func (w *wizardManager) handleCallback(ctx context.Context, cb *models.CallbackQuery) {
 	// Always ack so the spinner clears.
 	defer func() {
-		if _, err := w.api.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
+		if _, err := w.api.AnswerCallbackQuery(ctx, &tg.AnswerCallbackQueryParams{CallbackQueryID: cb.ID}); err != nil {
 			w.log.Debug("answering callback", sl.Err(err))
 		}
 	}()
@@ -169,7 +173,7 @@ func (w *wizardManager) handleCallback(cb *tgbotapi.CallbackQuery) {
 		// someone else's wizard. Either way: silent ack, leave message alone.
 		return
 	}
-	if cb.Message.MessageID != sess.messageID {
+	if msg := cb.Message.Message; msg == nil || msg.ID != sess.messageID {
 		// Tap on a different (older) wizard message — ignore.
 		return
 	}
@@ -183,57 +187,56 @@ func (w *wizardManager) handleCallback(cb *tgbotapi.CallbackQuery) {
 	sess.step++
 
 	if sess.step >= len(wizardSteps) {
-		w.finish(userID, sess)
+		w.finish(ctx, userID, sess)
 		return
 	}
 
 	next := wizardSteps[sess.step]
 	kb := buildKeyboard(sess.step, next.options)
-	w.editText(sess.chatID, sess.messageID, next.prompt, &kb)
+	w.editText(ctx, sess.chatID, sess.messageID, next.prompt, kb)
 }
 
-func (w *wizardManager) finish(userID int64, sess *wizardSession) {
+func (w *wizardManager) finish(ctx context.Context, userID int64, sess *wizardSession) {
 	now := time.Now()
 	sess.prefs.UpdatedAt = now
 	if sess.prefs.CreatedAt.IsZero() {
 		sess.prefs.CreatedAt = now
 	}
-	if err := w.prefs.SaveUserPreferences(sess.prefs); err != nil {
+	if err := w.prefs.SaveUserPreferences(ctx, sess.prefs); err != nil {
 		w.log.With(slog.Int64("user", userID)).Error("saving prefs", sl.Err(err))
-		w.editText(sess.chatID, sess.messageID, "Sorry, couldn't save your preferences. Try again later.", nil)
+		w.editText(ctx, sess.chatID, sess.messageID, "Sorry, couldn't save your preferences. Try again later.", nil)
 	} else {
-		w.editText(sess.chatID, sess.messageID, "Done. Your preferences are saved:\n"+summarize(sess.prefs), nil)
+		w.editText(ctx, sess.chatID, sess.messageID, "Done. Your preferences are saved:\n"+summarize(sess.prefs), nil)
 	}
 	w.mu.Lock()
 	delete(w.sessions, userID)
 	w.mu.Unlock()
 }
 
-func (w *wizardManager) send(chatID int64, text string) {
-	if _, err := w.api.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
+func (w *wizardManager) send(ctx context.Context, chatID int64, text string) {
+	if _, err := w.api.SendMessage(ctx, &tg.SendMessageParams{ChatID: chatID, Text: text}); err != nil {
 		w.log.With(slog.Int64("id", chatID)).Warn("send", sl.Err(err))
 	}
 }
 
-func (w *wizardManager) editText(chatID int64, messageID int, text string, kb *tgbotapi.InlineKeyboardMarkup) {
-	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+func (w *wizardManager) editText(ctx context.Context, chatID int64, messageID int, text string, kb *models.InlineKeyboardMarkup) {
+	params := &tg.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text}
+	// Assigning a nil *InlineKeyboardMarkup would make the interface non-nil.
 	if kb != nil {
-		edit.ReplyMarkup = kb
+		params.ReplyMarkup = kb
 	}
-	if _, err := w.api.Send(edit); err != nil {
+	if _, err := w.api.EditMessageText(ctx, params); err != nil {
 		w.log.With(slog.Int64("id", chatID)).Debug("wizard edit", sl.Err(err))
 	}
 }
 
-func buildKeyboard(step int, opts []wizardOption) tgbotapi.InlineKeyboardMarkup {
-	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(opts))
+func buildKeyboard(step int, opts []wizardOption) *models.InlineKeyboardMarkup {
+	rows := make([][]models.InlineKeyboardButton, 0, len(opts))
 	for _, o := range opts {
 		data := fmt.Sprintf("%s:%d:%s", callbackPrefix, step, o.value)
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(o.label, data),
-		))
+		rows = append(rows, []models.InlineKeyboardButton{{Text: o.label, CallbackData: data}})
 	}
-	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func parseCallback(data string) (step int, value string, ok bool) {

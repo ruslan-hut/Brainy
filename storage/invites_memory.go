@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -15,7 +16,7 @@ func NewMemoryInvitesStorage() *MemoryInvitesStorage {
 	return &MemoryInvitesStorage{invites: make(map[string]*InviteCode)}
 }
 
-func (m *MemoryInvitesStorage) GetInvite(code string) (*InviteCode, error) {
+func (m *MemoryInvitesStorage) GetInvite(ctx context.Context, code string) (*InviteCode, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if i, ok := m.invites[code]; ok {
@@ -25,7 +26,7 @@ func (m *MemoryInvitesStorage) GetInvite(code string) (*InviteCode, error) {
 	return nil, nil
 }
 
-func (m *MemoryInvitesStorage) SaveInvite(invite *InviteCode) error {
+func (m *MemoryInvitesStorage) SaveInvite(ctx context.Context, invite *InviteCode) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if invite.CreatedAt.IsZero() {
@@ -36,7 +37,7 @@ func (m *MemoryInvitesStorage) SaveInvite(invite *InviteCode) error {
 	return nil
 }
 
-func (m *MemoryInvitesStorage) RedeemInvite(code string, userId int64) (bool, error) {
+func (m *MemoryInvitesStorage) RedeemInvite(ctx context.Context, code string, userId int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.invites[code]
@@ -48,7 +49,7 @@ func (m *MemoryInvitesStorage) RedeemInvite(code string, userId int64) (bool, er
 	return true, nil
 }
 
-func (m *MemoryInvitesStorage) ListInvites(limit int) ([]*InviteCode, error) {
+func (m *MemoryInvitesStorage) ListInvites(ctx context.Context, limit int) ([]*InviteCode, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]*InviteCode, 0, len(m.invites))

@@ -18,10 +18,10 @@ type MongoInvitesStorage struct {
 	log        *slog.Logger
 }
 
-func NewMongoInvitesStorage(client *mongo.Client, database string, log *slog.Logger) (*MongoInvitesStorage, error) {
+func NewMongoInvitesStorage(ctx context.Context, client *mongo.Client, database string, log *slog.Logger) (*MongoInvitesStorage, error) {
 	collection := client.Database(database).Collection(invitesCollectionName)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	_, err := collection.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -35,8 +35,8 @@ func NewMongoInvitesStorage(client *mongo.Client, database string, log *slog.Log
 	return &MongoInvitesStorage{collection: collection, log: log}, nil
 }
 
-func (m *MongoInvitesStorage) GetInvite(code string) (*InviteCode, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoInvitesStorage) GetInvite(ctx context.Context, code string) (*InviteCode, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var i InviteCode
 	err := m.collection.FindOne(ctx, bson.M{"code": code}).Decode(&i)
@@ -49,8 +49,8 @@ func (m *MongoInvitesStorage) GetInvite(code string) (*InviteCode, error) {
 	return &i, nil
 }
 
-func (m *MongoInvitesStorage) SaveInvite(invite *InviteCode) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoInvitesStorage) SaveInvite(ctx context.Context, invite *InviteCode) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if invite.CreatedAt.IsZero() {
 		invite.CreatedAt = time.Now()
@@ -60,8 +60,8 @@ func (m *MongoInvitesStorage) SaveInvite(invite *InviteCode) error {
 }
 
 // RedeemInvite atomically claims an unused invite for userId.
-func (m *MongoInvitesStorage) RedeemInvite(code string, userId int64) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoInvitesStorage) RedeemInvite(ctx context.Context, code string, userId int64) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	res, err := m.collection.UpdateOne(ctx,
 		bson.M{"code": code, "used_by": int64(0)},
@@ -73,8 +73,8 @@ func (m *MongoInvitesStorage) RedeemInvite(code string, userId int64) (bool, err
 	return res.ModifiedCount == 1, nil
 }
 
-func (m *MongoInvitesStorage) ListInvites(limit int) ([]*InviteCode, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (m *MongoInvitesStorage) ListInvites(ctx context.Context, limit int) ([]*InviteCode, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
 	if limit > 0 {

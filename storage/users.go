@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 const (
 	RoleAdmin = "admin"
@@ -18,8 +21,8 @@ type User struct {
 
 // UsersStorage persists registered users and their roles.
 type UsersStorage interface {
-	GetUser(userId int64) (*User, error)
-	SaveUser(user *User) error
-	ListUsers() ([]*User, error)
+	GetUser(ctx context.Context, userId int64) (*User, error)
+	SaveUser(ctx context.Context, user *User) error
+	ListUsers(ctx context.Context) ([]*User, error)
 	Close() error
 }

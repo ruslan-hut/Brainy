@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -14,7 +15,7 @@ func NewMemoryUsersStorage() *MemoryUsersStorage {
 	return &MemoryUsersStorage{users: make(map[int64]*User)}
 }
 
-func (m *MemoryUsersStorage) GetUser(userId int64) (*User, error) {
+func (m *MemoryUsersStorage) GetUser(ctx context.Context, userId int64) (*User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if u, ok := m.users[userId]; ok {
@@ -24,7 +25,7 @@ func (m *MemoryUsersStorage) GetUser(userId int64) (*User, error) {
 	return nil, nil
 }
 
-func (m *MemoryUsersStorage) SaveUser(user *User) error {
+func (m *MemoryUsersStorage) SaveUser(ctx context.Context, user *User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if user.JoinedAt.IsZero() {
@@ -35,7 +36,7 @@ func (m *MemoryUsersStorage) SaveUser(user *User) error {
 	return nil
 }
 
-func (m *MemoryUsersStorage) ListUsers() ([]*User, error) {
+func (m *MemoryUsersStorage) ListUsers(ctx context.Context) ([]*User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]*User, 0, len(m.users))

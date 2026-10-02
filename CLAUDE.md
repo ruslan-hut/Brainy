@@ -33,9 +33,9 @@ Pushing to `master` deploys to production (`.github/workflows/deploy.yml` builds
 
 ## Architecture
 
-Telegram bot (`go-telegram-bot-api/v5`) backed by the OpenAI Chat Completions API (`openai-go/v3`).
+Telegram bot (`github.com/go-telegram/bot`, imported as `tg`) backed by the OpenAI Chat Completions API (`openai-go/v3`).
 
-- **main.go**: entry point; wires storages, `ai.ChatGPT`, `ai.PreferencesAnalyzer`, `bot.TgBot`; graceful shutdown on SIGINT/SIGTERM
+- **main.go**: entry point; wires storages, `ai.ChatGPT`, `ai.PreferencesAnalyzer`, `bot.TgBot`. The root `ctx` comes from `signal.NotifyContext`; shutdown order is `TgBot.Start` returning (after in-flight replies) → `PreferencesAnalyzer.Wait` → storage `Close`
 - **core/**: config singleton and the `ChatService` interface the bot depends on
 - **ai/chat-gpt.go**: chat (streaming, with a `generate_image` function tool), one-shot prompts, translations, image generation
 - **ai/preferences_analyzer.go**: background job inferring user preferences via structured output; injected into the system prompt
@@ -51,6 +51,10 @@ Telegram bot (`go-telegram-bot-api/v5`) backed by the OpenAI Chat Completions AP
 3. If the model calls `generate_image`, the bot generates and sends an image instead of text; history is not updated
 4. Otherwise the reply streams to Telegram, is stored in the dialog context, and the final text is sent as MarkdownV2 (plain-text fallback)
 
+### Context
+
+Every storage, `holder`, `ai` and `ChatService` method takes `ctx` first (except `Close`); per-call timeouts wrap the caller's ctx. Bot handlers receive the root ctx from `TgBot.Start`, so cancellation reaches OpenAI and MongoDB calls on shutdown.
+
 ### OpenAI constraints
 
 - Chat Completions allows function calling only with `reasoning_effort: none`, so the tool-using chat path pins it; don't make it configurable.
@@ -59,7 +63,9 @@ Telegram bot (`go-telegram-bot-api/v5`) backed by the OpenAI Chat Completions AP
 ### Telegram constraints
 
 - Messages are limited to 4096 UTF-16 units; all outgoing text goes through `splitMessage`, which also keeps code fences balanced per chunk.
-- Private chats stream via `sendMessageDraft` (called through `api.MakeRequest`, since the library predates it); groups stream by editing a posted message. A draft is never persisted — the final reply is always sent as a regular message.
+- Private chats stream via `SendMessageDraft`; groups stream by editing a posted message. A draft is never persisted — the final reply is always sent as a regular message.
+- Updates are handled one at a time (`WithNotAsyncHandlers`, one worker) in `handleUpdate`; anything slow (LLM calls, image generation) must go through `goSafe`, which recovers panics and is tracked so shutdown waits for it.
+- Callback `cb.Message.Message` is nil for inaccessible messages; check it before use.
 
 ## Bot Commands
 

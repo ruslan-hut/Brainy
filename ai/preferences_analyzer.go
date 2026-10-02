@@ -32,7 +32,6 @@ type PreferencesAnalyzer struct {
 	contextStorage   storage.ContextStorage
 	prefsStorage     storage.PreferencesStorage
 	client           openai.Client
-	stopChan         chan struct{}
 	wg               sync.WaitGroup
 	analysisInFlight sync.Map // map[int64]bool
 }
@@ -49,11 +48,11 @@ func NewPreferencesAnalyzer(
 		contextStorage: contextStorage,
 		prefsStorage:   prefsStorage,
 		client:         openai.NewClient(option.WithAPIKey(conf.OpenAIApiKey)),
-		stopChan:       make(chan struct{}),
 	}
 }
 
-func (pa *PreferencesAnalyzer) StartBackgroundAnalysis() {
+// Start runs periodic background analysis until ctx is cancelled.
+func (pa *PreferencesAnalyzer) Start(ctx context.Context) {
 	pa.wg.Add(1)
 	go func() {
 		defer pa.wg.Done()
@@ -65,8 +64,8 @@ func (pa *PreferencesAnalyzer) StartBackgroundAnalysis() {
 		for {
 			select {
 			case <-ticker.C:
-				pa.runBackgroundAnalysis()
-			case <-pa.stopChan:
+				pa.runBackgroundAnalysis(ctx)
+			case <-ctx.Done():
 				pa.log.Info("background analysis stopped")
 				return
 			}
@@ -74,13 +73,13 @@ func (pa *PreferencesAnalyzer) StartBackgroundAnalysis() {
 	}()
 }
 
-func (pa *PreferencesAnalyzer) Stop() {
-	close(pa.stopChan)
+// Wait blocks until the background loop and in-flight analyses have exited.
+func (pa *PreferencesAnalyzer) Wait() {
 	pa.wg.Wait()
 }
 
-func (pa *PreferencesAnalyzer) runBackgroundAnalysis() {
-	users, err := pa.prefsStorage.GetUsersNeedingAnalysis(analysisInterval)
+func (pa *PreferencesAnalyzer) runBackgroundAnalysis(ctx context.Context) {
+	users, err := pa.prefsStorage.GetUsersNeedingAnalysis(ctx, analysisInterval)
 	if err != nil {
 		pa.log.Error("getting users for analysis", sl.Err(err))
 		return
@@ -89,11 +88,14 @@ func (pa *PreferencesAnalyzer) runBackgroundAnalysis() {
 		pa.log.Info("users needing analysis", slog.Int("count", len(users)))
 	}
 	for _, userId := range users {
-		pa.TriggerAnalysisAsync(userId)
+		pa.TriggerAnalysisAsync(ctx, userId)
 	}
 }
 
-func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(userId int64) {
+func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(ctx context.Context, userId int64) {
+	if ctx.Err() != nil {
+		return
+	}
 	if _, loaded := pa.analysisInFlight.LoadOrStore(userId, true); loaded {
 		return
 	}
@@ -106,17 +108,17 @@ func (pa *PreferencesAnalyzer) TriggerAnalysisAsync(userId int64) {
 				pa.log.With(slog.Int64("user", userId)).Error("recovered from panic", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
 			}
 		}()
-		if err := pa.AnalyzeUser(userId); err != nil {
+		if err := pa.AnalyzeUser(ctx, userId); err != nil {
 			pa.log.With(slog.Int64("user", userId)).Error("analyzing user preferences", sl.Err(err))
 		}
 	}()
 }
 
-func (pa *PreferencesAnalyzer) AnalyzeUser(userId int64) error {
-	if existing, _ := pa.prefsStorage.GetUserPreferences(userId); existing != nil && existing.ManuallySet {
+func (pa *PreferencesAnalyzer) AnalyzeUser(ctx context.Context, userId int64) error {
+	if existing, _ := pa.prefsStorage.GetUserPreferences(ctx, userId); existing != nil && existing.ManuallySet {
 		return nil
 	}
-	dialogCtx, err := pa.contextStorage.GetUserContext(userId)
+	dialogCtx, err := pa.contextStorage.GetUserContext(ctx, userId)
 	if err != nil {
 		return fmt.Errorf("getting user context: %w", err)
 	}
@@ -137,13 +139,13 @@ func (pa *PreferencesAnalyzer) AnalyzeUser(userId int64) error {
 	pa.log.With(slog.Int64("user", userId)).Info("starting preferences analysis",
 		slog.Int("messages", len(userMessages)))
 
-	analysis, err := pa.callOpenAI(userMessages)
+	analysis, err := pa.callOpenAI(ctx, userMessages)
 	if err != nil {
 		return fmt.Errorf("calling OpenAI: %w", err)
 	}
 
-	prefs := pa.buildUserPreferences(userId, analysis)
-	if err := pa.prefsStorage.SaveUserPreferences(prefs); err != nil {
+	prefs := pa.buildUserPreferences(ctx, userId, analysis)
+	if err := pa.prefsStorage.SaveUserPreferences(ctx, prefs); err != nil {
 		return fmt.Errorf("saving preferences: %w", err)
 	}
 
@@ -169,8 +171,8 @@ func generateSchema[T any]() map[string]any {
 	return result
 }
 
-func (pa *PreferencesAnalyzer) callOpenAI(userMessages []string) (*storage.PreferencesAnalysis, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+func (pa *PreferencesAnalyzer) callOpenAI(ctx context.Context, userMessages []string) (*storage.PreferencesAnalysis, error) {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
 	prompt := fmt.Sprintf(`Analyze the following user messages and infer their communication preferences.
@@ -215,8 +217,8 @@ Fields to populate:
 	return &analysis, nil
 }
 
-func (pa *PreferencesAnalyzer) buildUserPreferences(userId int64, analysis *storage.PreferencesAnalysis) *storage.UserPreferences {
-	existing, _ := pa.prefsStorage.GetUserPreferences(userId)
+func (pa *PreferencesAnalyzer) buildUserPreferences(ctx context.Context, userId int64, analysis *storage.PreferencesAnalysis) *storage.UserPreferences {
+	existing, _ := pa.prefsStorage.GetUserPreferences(ctx, userId)
 
 	prefs := &storage.UserPreferences{
 		UserId:            userId,
@@ -239,8 +241,8 @@ func (pa *PreferencesAnalyzer) buildUserPreferences(userId int64, analysis *stor
 }
 
 // GetUserPreferences returns preferences for prompt injection
-func (pa *PreferencesAnalyzer) GetUserPreferences(userId int64) *storage.UserPreferences {
-	prefs, err := pa.prefsStorage.GetUserPreferences(userId)
+func (pa *PreferencesAnalyzer) GetUserPreferences(ctx context.Context, userId int64) *storage.UserPreferences {
+	prefs, err := pa.prefsStorage.GetUserPreferences(ctx, userId)
 	if err != nil {
 		pa.log.Error("getting user preferences", sl.Err(err))
 		return nil
@@ -249,8 +251,8 @@ func (pa *PreferencesAnalyzer) GetUserPreferences(userId int64) *storage.UserPre
 }
 
 // UpdateLastMessageTime should be called when user sends a message
-func (pa *PreferencesAnalyzer) UpdateLastMessageTime(userId int64) {
-	if err := pa.prefsStorage.UpdateLastMessageTime(userId); err != nil {
+func (pa *PreferencesAnalyzer) UpdateLastMessageTime(ctx context.Context, userId int64) {
+	if err := pa.prefsStorage.UpdateLastMessageTime(ctx, userId); err != nil {
 		pa.log.Error("updating last message time", sl.Err(err))
 	}
 }

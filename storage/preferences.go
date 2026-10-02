@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // UserPreferences stores analyzed user communication preferences
 type UserPreferences struct {
@@ -33,14 +36,14 @@ type PreferencesAnalysis struct {
 // PreferencesStorage defines the interface for user preferences persistence
 type PreferencesStorage interface {
 	// GetUserPreferences retrieves preferences for a user (returns nil if none exist)
-	GetUserPreferences(userId int64) (*UserPreferences, error)
+	GetUserPreferences(ctx context.Context, userId int64) (*UserPreferences, error)
 	// SaveUserPreferences creates or updates user preferences
-	SaveUserPreferences(prefs *UserPreferences) error
+	SaveUserPreferences(ctx context.Context, prefs *UserPreferences) error
 	// UpdateLastMessageTime updates the LastMessageAt timestamp when user sends a message
-	UpdateLastMessageTime(userId int64) error
+	UpdateLastMessageTime(ctx context.Context, userId int64) error
 	// GetUsersNeedingAnalysis returns user IDs where LastMessageAt > LastAnalysisAt
 	// AND time.Since(LastAnalysisAt) > cutoffDuration
-	GetUsersNeedingAnalysis(cutoffDuration time.Duration) ([]int64, error)
+	GetUsersNeedingAnalysis(ctx context.Context, cutoffDuration time.Duration) ([]int64, error)
 	// Close closes the storage connection
 	Close() error
 }

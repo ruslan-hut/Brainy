@@ -3,6 +3,7 @@ package holder
 import (
 	"Brainy/lib/sl"
 	"Brainy/storage"
+	"context"
 	"log/slog"
 )
 
@@ -24,35 +25,35 @@ func NewContextManager(store storage.ContextStorage, log *slog.Logger) *ContextM
 	}
 }
 
-func (cm *ContextManager) GetUserContext(userId int64) *DialogContext {
-	ctx, err := cm.storage.GetUserContext(userId)
+func (cm *ContextManager) GetUserContext(ctx context.Context, userId int64) *DialogContext {
+	dialog, err := cm.storage.GetUserContext(ctx, userId)
 	if err != nil {
 		cm.log.With(slog.Int64("user", userId)).Error("getting user context", sl.Err(err))
 		return nil
 	}
-	return ctx
+	return dialog
 }
 
-func (cm *ContextManager) UpdateUserContext(userId int64, message Message) {
-	if err := cm.storage.UpdateUserContext(userId, message); err != nil {
+func (cm *ContextManager) UpdateUserContext(ctx context.Context, userId int64, message Message) {
+	if err := cm.storage.UpdateUserContext(ctx, userId, message); err != nil {
 		cm.log.With(slog.Int64("user", userId)).Error("updating user context", sl.Err(err))
 	}
 }
 
-func (cm *ContextManager) SetTokens(userId int64, total int) {
-	if err := cm.storage.SetTokens(userId, total); err != nil {
+func (cm *ContextManager) SetTokens(ctx context.Context, userId int64, total int) {
+	if err := cm.storage.SetTokens(ctx, userId, total); err != nil {
 		cm.log.With(slog.Int64("user", userId)).Error("setting tokens", sl.Err(err))
 	}
 }
 
-func (cm *ContextManager) SetTopic(userId int64, topic string) {
-	if err := cm.storage.SetTopic(userId, topic); err != nil {
+func (cm *ContextManager) SetTopic(ctx context.Context, userId int64, topic string) {
+	if err := cm.storage.SetTopic(ctx, userId, topic); err != nil {
 		cm.log.With(slog.Int64("user", userId)).Error("setting topic", sl.Err(err))
 	}
 }
 
-func (cm *ContextManager) ClearUserContext(userId int64) {
-	if err := cm.storage.ClearUserContext(userId); err != nil {
+func (cm *ContextManager) ClearUserContext(ctx context.Context, userId int64) {
+	if err := cm.storage.ClearUserContext(ctx, userId); err != nil {
 		cm.log.With(slog.Int64("user", userId)).Error("clearing user context", sl.Err(err))
 	}
 }

@@ -1,15 +1,18 @@
 package bot
 
 import (
+	"context"
 	"log/slog"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"Brainy/lib/sl"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 // streamEditor renders a streaming chat completion in a Telegram chat.
@@ -49,11 +52,11 @@ func newStreamEditor(bot *TgBot, chatId int64, private bool) *streamEditor {
 	}
 }
 
-func (e *streamEditor) start() {
-	go e.loop()
+func (e *streamEditor) start(ctx context.Context) {
+	go e.loop(ctx)
 }
 
-func (e *streamEditor) loop() {
+func (e *streamEditor) loop(ctx context.Context) {
 	defer close(e.doneCh)
 	ticker := time.NewTicker(streamEditInterval)
 	defer ticker.Stop()
@@ -63,16 +66,18 @@ func (e *streamEditor) loop() {
 		select {
 		case <-e.wakeCh:
 			// First content arrived — show it right away.
-			e.flush(&lastSent)
+			e.flush(ctx, &lastSent)
 		case <-ticker.C:
-			e.flush(&lastSent)
+			e.flush(ctx, &lastSent)
 		case <-e.stopCh:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (e *streamEditor) flush(lastSent *string) {
+func (e *streamEditor) flush(ctx context.Context, lastSent *string) {
 	e.mu.Lock()
 	cur := e.latest
 	msgID := e.msgID
@@ -90,7 +95,7 @@ func (e *streamEditor) flush(lastSent *string) {
 	if e.draft {
 		// The final message carries the full text, so the preview follows
 		// the tail of a long reply.
-		if err := e.sendDraft(chunks[len(chunks)-1]); err != nil {
+		if err := e.sendDraft(ctx, chunks[len(chunks)-1]); err != nil {
 			e.bot.log.With(slog.Int64("id", e.chatId)).Warn("stream draft, falling back to edits", sl.Err(err))
 			e.draft = false
 			e.bot.draftsUnsupported.Store(true)
@@ -103,20 +108,19 @@ func (e *streamEditor) flush(lastSent *string) {
 	// The edited message becomes the first chunk of the final reply.
 	preview := chunks[0]
 	if msgID == 0 {
-		sent, err := e.bot.api.Send(tgbotapi.NewMessage(e.chatId, preview))
+		sent, err := e.bot.api.SendMessage(ctx, &tg.SendMessageParams{ChatID: e.chatId, Text: preview})
 		if err != nil {
 			e.bot.log.With(slog.Int64("id", e.chatId)).Warn("stream initial send", sl.Err(err))
 			return
 		}
 		e.mu.Lock()
-		e.msgID = sent.MessageID
+		e.msgID = sent.ID
 		e.mu.Unlock()
 		*lastSent = cur
 		return
 	}
 
-	edit := tgbotapi.NewEditMessageText(e.chatId, msgID, preview)
-	if _, err := e.bot.api.Send(edit); err != nil {
+	if _, err := e.bot.api.EditMessageText(ctx, &tg.EditMessageTextParams{ChatID: e.chatId, MessageID: msgID, Text: preview}); err != nil {
 		// Telegram returns "message is not modified" if no diff; ignore.
 		e.bot.log.With(slog.Int64("id", e.chatId)).Debug("stream edit", sl.Err(err))
 		return
@@ -124,12 +128,12 @@ func (e *streamEditor) flush(lastSent *string) {
 	*lastSent = cur
 }
 
-func (e *streamEditor) sendDraft(text string) error {
-	params := tgbotapi.Params{}
-	params.AddNonZero64("chat_id", e.chatId)
-	params.AddNonZero("draft_id", e.draftID)
-	params.AddNonEmpty("text", text)
-	_, err := e.bot.api.MakeRequest("sendMessageDraft", params)
+func (e *streamEditor) sendDraft(ctx context.Context, text string) error {
+	_, err := e.bot.api.SendMessageDraft(ctx, &tg.SendMessageDraftParams{
+		ChatID:  e.chatId,
+		DraftID: strconv.Itoa(e.draftID),
+		Text:    text,
+	})
 	return err
 }
 
@@ -161,7 +165,7 @@ func (e *streamEditor) stop() {
 }
 
 // finalize delivers the formatted final text, replacing the streamed preview.
-func (e *streamEditor) finalize(finalText string) {
+func (e *streamEditor) finalize(ctx context.Context, finalText string) {
 	e.mu.Lock()
 	msgID := e.msgID
 	e.mu.Unlock()
@@ -169,7 +173,7 @@ func (e *streamEditor) finalize(finalText string) {
 	if msgID == 0 {
 		// Drafts are never persisted, and in edit mode no chunk may have
 		// arrived yet; either way the reply goes out as fresh messages.
-		e.bot.plainResponse(e.chatId, finalText)
+		e.bot.plainResponse(ctx, e.chatId, finalText)
 		return
 	}
 
@@ -177,26 +181,32 @@ func (e *streamEditor) finalize(finalText string) {
 	if len(chunks) == 0 {
 		return
 	}
-	e.editFormatted(msgID, chunks[0])
+	e.editFormatted(ctx, msgID, chunks[0])
 	for _, chunk := range chunks[1:] {
-		e.bot.sendFormatted(e.chatId, chunk)
+		e.bot.sendFormatted(ctx, e.chatId, chunk)
 	}
 }
 
-func (e *streamEditor) editFormatted(msgID int, text string) {
+func (e *streamEditor) editFormatted(ctx context.Context, msgID int, text string) {
 	formatted := strings.NewReplacer("**", "*", "![", "[").Replace(text)
 	sanitized := sanitize(formatted)
 
-	edit := tgbotapi.NewEditMessageText(e.chatId, msgID, sanitized)
-	edit.ParseMode = "MarkdownV2"
-	if _, err := e.bot.api.Send(edit); err != nil {
+	if _, err := e.bot.api.EditMessageText(ctx, &tg.EditMessageTextParams{
+		ChatID:    e.chatId,
+		MessageID: msgID,
+		Text:      sanitized,
+		ParseMode: models.ParseModeMarkdown,
+	}); err != nil {
 		if isNotModified(err) {
 			return
 		}
 		// Markdown failed; retry without parse mode and strip leftover markers
 		// so the user doesn't see raw "**" / "*" / "_".
-		fallback := tgbotapi.NewEditMessageText(e.chatId, msgID, stripMarkdown(text))
-		if _, err2 := e.bot.api.Send(fallback); err2 != nil && !isNotModified(err2) {
+		if _, err2 := e.bot.api.EditMessageText(ctx, &tg.EditMessageTextParams{
+			ChatID:    e.chatId,
+			MessageID: msgID,
+			Text:      stripMarkdown(text),
+		}); err2 != nil && !isNotModified(err2) {
 			e.bot.log.With(slog.Int64("id", e.chatId)).Warn("stream finalize", sl.Err(err2))
 		}
 	}
@@ -209,7 +219,7 @@ func isNotModified(err error) bool {
 // deleteIfPosted removes the streamed message if one was posted.
 // Used when the model decided on a tool call (image) or errored out.
 // A draft needs no cleanup: it is replaced by the next message or expires.
-func (e *streamEditor) deleteIfPosted() {
+func (e *streamEditor) deleteIfPosted(ctx context.Context) {
 	e.mu.Lock()
 	msgID := e.msgID
 	e.mu.Unlock()
@@ -217,7 +227,7 @@ func (e *streamEditor) deleteIfPosted() {
 	if msgID == 0 {
 		return
 	}
-	if _, err := e.bot.api.Request(tgbotapi.NewDeleteMessage(e.chatId, msgID)); err != nil {
+	if _, err := e.bot.api.DeleteMessage(ctx, &tg.DeleteMessageParams{ChatID: e.chatId, MessageID: msgID}); err != nil {
 		e.bot.log.With(slog.Int64("id", e.chatId)).Debug("stream delete", sl.Err(err))
 	}
 }

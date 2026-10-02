@@ -3,6 +3,7 @@ package bot
 import (
 	"Brainy/lib/sl"
 	"Brainy/storage"
+	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
@@ -10,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 const adminCallbackPrefix = "admin"
@@ -27,23 +29,19 @@ func generateInviteCode() (string, error) {
 }
 
 // adminMenuKeyboard is the top-level inline menu shown by /admin.
-func adminMenuKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Generate code", adminCallbackPrefix+":gen"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("List codes", adminCallbackPrefix+":list"),
-		),
-	)
+func adminMenuKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: "Generate code", CallbackData: adminCallbackPrefix + ":gen"}},
+		{{Text: "List codes", CallbackData: adminCallbackPrefix + ":list"}},
+	}}
 }
 
 // isAdmin reports whether userId currently has admin role.
-func (t *TgBot) isAdmin(userId int64) bool {
+func (t *TgBot) isAdmin(ctx context.Context, userId int64) bool {
 	if t.users == nil {
 		return false
 	}
-	u, err := t.users.GetUser(userId)
+	u, err := t.users.GetUser(ctx, userId)
 	if err != nil || u == nil {
 		return false
 	}
@@ -51,21 +49,21 @@ func (t *TgBot) isAdmin(userId int64) bool {
 }
 
 // isAuthorized reports whether userId is registered (any role).
-func (t *TgBot) isAuthorized(userId int64) bool {
+func (t *TgBot) isAuthorized(ctx context.Context, userId int64) bool {
 	if t.users == nil {
 		return true // gating disabled if users storage not wired
 	}
-	u, err := t.users.GetUser(userId)
+	u, err := t.users.GetUser(ctx, userId)
 	return err == nil && u != nil
 }
 
 // seedAdmins ensures every config-listed user is registered as admin at startup.
-func (t *TgBot) seedAdmins(ids []int64) {
+func (t *TgBot) seedAdmins(ctx context.Context, ids []int64) {
 	if t.users == nil {
 		return
 	}
 	for _, id := range ids {
-		existing, _ := t.users.GetUser(id)
+		existing, _ := t.users.GetUser(ctx, id)
 		if existing != nil && existing.Role == storage.RoleAdmin {
 			continue
 		}
@@ -79,7 +77,7 @@ func (t *TgBot) seedAdmins(ids []int64) {
 			u.InviteCode = existing.InviteCode
 			u.JoinedAt = existing.JoinedAt
 		}
-		if err := t.users.SaveUser(u); err != nil {
+		if err := t.users.SaveUser(ctx, u); err != nil {
 			t.log.With(slog.Int64("user", id)).Error("seeding admin", sl.Err(err))
 		} else {
 			t.log.With(slog.Int64("user", id)).Info("seeded admin")
@@ -88,11 +86,11 @@ func (t *TgBot) seedAdmins(ids []int64) {
 }
 
 // redeemAndRegister redeems code for a new user and persists their record.
-func (t *TgBot) redeemAndRegister(userId int64, username, code string) error {
+func (t *TgBot) redeemAndRegister(ctx context.Context, userId int64, username, code string) error {
 	if t.invites == nil || t.users == nil {
 		return fmt.Errorf("invites disabled")
 	}
-	ok, err := t.invites.RedeemInvite(code, userId)
+	ok, err := t.invites.RedeemInvite(ctx, code, userId)
 	if err != nil {
 		return fmt.Errorf("redeeming: %w", err)
 	}
@@ -106,99 +104,96 @@ func (t *TgBot) redeemAndRegister(userId int64, username, code string) error {
 		InviteCode: code,
 		JoinedAt:   time.Now(),
 	}
-	return t.users.SaveUser(u)
+	return t.users.SaveUser(ctx, u)
 }
 
 // handleStart processes /start. With an arg it redeems immediately; without
 // one it prompts the user for their invite code (consumed by the next message).
 // messageID is the /start message itself; deleted on successful redemption so
 // the code doesn't linger in the chat history.
-func (t *TgBot) handleStart(chatID, userID int64, messageID int, username, code string) {
-	if t.isAuthorized(userID) {
-		t.plainResponse(chatID, "Welcome back. Type /help to see what I can do.")
+func (t *TgBot) handleStart(ctx context.Context, chatID, userID int64, messageID int, username, code string) {
+	if t.isAuthorized(ctx, userID) {
+		t.plainResponse(ctx, chatID, "Welcome back. Type /help to see what I can do.")
 		return
 	}
 	if code == "" {
 		t.awaiting.Store(userID, struct{}{})
-		t.plainResponse(chatID, "Hello! Please send me your invite code.")
+		t.plainResponse(ctx, chatID, "Hello! Please send me your invite code.")
 		return
 	}
-	t.handleInviteSubmission(chatID, userID, messageID, username, code)
+	t.handleInviteSubmission(ctx, chatID, userID, messageID, username, code)
 }
 
 // handleInviteSubmission tries to redeem code; on success registers the user
 // and deletes their message containing the code. On failure the user stays in
 // "awaiting" state so they can retype.
-func (t *TgBot) handleInviteSubmission(chatID, userID int64, messageID int, username, code string) {
+func (t *TgBot) handleInviteSubmission(ctx context.Context, chatID, userID int64, messageID int, username, code string) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code == "" {
-		t.plainResponse(chatID, "Please send your invite code.")
+		t.plainResponse(ctx, chatID, "Please send your invite code.")
 		return
 	}
-	if err := t.redeemAndRegister(userID, username, code); err != nil {
+	if err := t.redeemAndRegister(ctx, userID, username, code); err != nil {
 		t.log.With(slog.Int64("user", userID)).Info("invite redemption failed", sl.Err(err))
-		t.plainResponse(chatID, "That code is invalid or already used. Try again, or /start to restart.")
+		t.plainResponse(ctx, chatID, "That code is invalid or already used. Try again, or /start to restart.")
 		return
 	}
 	t.awaiting.Delete(userID)
-	t.deleteMessage(chatID, messageID)
+	t.deleteMessage(ctx, chatID, messageID)
 	t.log.With(slog.Int64("user", userID), slog.String("code", code)).Info("user registered")
-	t.plainResponse(chatID, "Code accepted, welcome! Type /help to get started.")
+	t.plainResponse(ctx, chatID, "Code accepted, welcome! Type /help to get started.")
 }
 
 // deleteMessage best-effort removes a message; logs at debug if it fails
 // (e.g. bot lacks delete permission in a group).
-func (t *TgBot) deleteMessage(chatID int64, messageID int) {
+func (t *TgBot) deleteMessage(ctx context.Context, chatID int64, messageID int) {
 	if messageID == 0 {
 		return
 	}
-	if _, err := t.api.Request(tgbotapi.NewDeleteMessage(chatID, messageID)); err != nil {
+	if _, err := t.api.DeleteMessage(ctx, &tg.DeleteMessageParams{ChatID: chatID, MessageID: messageID}); err != nil {
 		t.log.With(slog.Int64("id", chatID), slog.Int("msg", messageID)).
 			Debug("delete message", sl.Err(err))
 	}
 }
 
 // handleAdminCallback dispatches admin menu button taps.
-func (t *TgBot) handleAdminCallback(cb *tgbotapi.CallbackQuery) {
-	defer func() {
-		if _, err := t.api.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
-			t.log.Debug("answering admin callback", sl.Err(err))
-		}
-	}()
+func (t *TgBot) handleAdminCallback(ctx context.Context, cb *models.CallbackQuery) {
+	defer t.answerCallback(ctx, cb.ID)
 
-	if !t.isAdmin(cb.From.ID) {
+	if !t.isAdmin(ctx, cb.From.ID) {
 		return
 	}
 	parts := strings.SplitN(cb.Data, ":", 2)
-	if len(parts) != 2 {
+	msg := cb.Message.Message
+	if len(parts) != 2 || msg == nil {
 		return
 	}
-	chatID := cb.Message.Chat.ID
-	msgID := cb.Message.MessageID
+	chatID := msg.Chat.ID
+	msgID := msg.ID
 
 	switch parts[1] {
 	case "gen":
-		code, err := t.generateAndSaveCode(cb.From.ID)
+		code, err := t.generateAndSaveCode(ctx, cb.From.ID)
 		if err != nil {
-			t.editAdminText(chatID, msgID, "Failed to generate code: "+err.Error())
+			t.editAdminText(ctx, chatID, msgID, "Failed to generate code: "+err.Error())
 			return
 		}
 		text := fmt.Sprintf("New invite code:\n`%s`\n\nShare it with the new user. They redeem with /start <code>.", code)
-		t.editAdminMarkdown(chatID, msgID, text)
+		t.editAdminMarkdown(ctx, chatID, msgID, text)
 	case "list":
-		text := t.formatInviteList()
-		t.editAdminMarkdown(chatID, msgID, text)
+		text := t.formatInviteList(ctx)
+		t.editAdminMarkdown(ctx, chatID, msgID, text)
 	}
 }
 
 // generateAndSaveCode creates and persists a unique invite code.
-func (t *TgBot) generateAndSaveCode(createdBy int64) (string, error) {
+func (t *TgBot) generateAndSaveCode(ctx context.Context, createdBy int64) (string, error) {
 	for attempts := 0; attempts < 5; attempts++ {
 		code, err := generateInviteCode()
 		if err != nil {
 			return "", err
 		}
-		existing, _ := t.invites.GetInvite(code)
+		existing, _ := t.invites.GetInvite(ctx, code)
 		if existing != nil {
 			continue
 		}
@@ -207,7 +202,7 @@ func (t *TgBot) generateAndSaveCode(createdBy int64) (string, error) {
 			CreatedBy: createdBy,
 			CreatedAt: time.Now(),
 		}
-		if err := t.invites.SaveInvite(invite); err != nil {
+		if err := t.invites.SaveInvite(ctx, invite); err != nil {
 			return "", err
 		}
 		return code, nil
@@ -215,8 +210,8 @@ func (t *TgBot) generateAndSaveCode(createdBy int64) (string, error) {
 	return "", fmt.Errorf("could not generate unique code")
 }
 
-func (t *TgBot) formatInviteList() string {
-	codes, err := t.invites.ListInvites(inviteListLimit)
+func (t *TgBot) formatInviteList(ctx context.Context) string {
+	codes, err := t.invites.ListInvites(ctx, inviteListLimit)
 	if err != nil {
 		return "Failed to list codes: " + err.Error()
 	}
@@ -235,18 +230,27 @@ func (t *TgBot) formatInviteList() string {
 	return b.String()
 }
 
-func (t *TgBot) editAdminText(chatID int64, msgID int, text string) {
-	edit := tgbotapi.NewEditMessageText(chatID, msgID, text)
-	if _, err := t.api.Send(edit); err != nil {
+func (t *TgBot) editAdminText(ctx context.Context, chatID int64, msgID int, text string) {
+	if _, err := t.api.EditMessageText(ctx, &tg.EditMessageTextParams{ChatID: chatID, MessageID: msgID, Text: text}); err != nil {
 		t.log.With(slog.Int64("id", chatID)).Debug("admin edit", sl.Err(err))
 	}
 }
 
-func (t *TgBot) editAdminMarkdown(chatID int64, msgID int, text string) {
-	edit := tgbotapi.NewEditMessageText(chatID, msgID, text)
-	edit.ParseMode = "Markdown"
-	if _, err := t.api.Send(edit); err != nil {
+func (t *TgBot) editAdminMarkdown(ctx context.Context, chatID int64, msgID int, text string) {
+	if _, err := t.api.EditMessageText(ctx, &tg.EditMessageTextParams{
+		ChatID:    chatID,
+		MessageID: msgID,
+		Text:      text,
+		ParseMode: models.ParseModeMarkdownV1,
+	}); err != nil {
 		// Fallback to plain text if Markdown parsing fails.
-		t.editAdminText(chatID, msgID, text)
+		t.editAdminText(ctx, chatID, msgID, text)
+	}
+}
+
+// answerCallback clears the button's loading spinner.
+func (t *TgBot) answerCallback(ctx context.Context, id string) {
+	if _, err := t.api.AnswerCallbackQuery(ctx, &tg.AnswerCallbackQueryParams{CallbackQueryID: id}); err != nil {
+		t.log.Debug("answering callback", sl.Err(err))
 	}
 }

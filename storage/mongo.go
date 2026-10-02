@@ -22,8 +22,8 @@ type MongoStorage struct {
 	log        *slog.Logger
 }
 
-func NewMongoStorage(uri, database string, log *slog.Logger) (*MongoStorage, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func NewMongoStorage(ctx context.Context, uri, database string, log *slog.Logger) (*MongoStorage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
@@ -53,8 +53,8 @@ func NewMongoStorage(uri, database string, log *slog.Logger) (*MongoStorage, err
 	}, nil
 }
 
-func (m *MongoStorage) GetUserContext(userId int64) (*DialogContext, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoStorage) GetUserContext(ctx context.Context, userId int64) (*DialogContext, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var dialogCtx DialogContext
@@ -68,13 +68,13 @@ func (m *MongoStorage) GetUserContext(userId int64) (*DialogContext, error) {
 	return &dialogCtx, nil
 }
 
-func (m *MongoStorage) UpdateUserContext(userId int64, message Message) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoStorage) UpdateUserContext(ctx context.Context, userId int64, message Message) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	message.Timestamp = time.Now()
 
-	existing, err := m.GetUserContext(userId)
+	existing, err := m.GetUserContext(ctx, userId)
 	if err != nil {
 		return err
 	}
@@ -105,8 +105,8 @@ func (m *MongoStorage) UpdateUserContext(userId int64, message Message) error {
 	return err
 }
 
-func (m *MongoStorage) SetTokens(userId int64, total int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoStorage) SetTokens(ctx context.Context, userId int64, total int) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	_, err := m.collection.UpdateOne(ctx,
 		bson.M{"user_id": userId},
@@ -115,8 +115,8 @@ func (m *MongoStorage) SetTokens(userId int64, total int) error {
 	return err
 }
 
-func (m *MongoStorage) SetTopic(userId int64, topic string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoStorage) SetTopic(ctx context.Context, userId int64, topic string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	update := bson.M{
@@ -136,8 +136,8 @@ func (m *MongoStorage) SetTopic(userId int64, topic string) error {
 	return err
 }
 
-func (m *MongoStorage) ClearUserContext(userId int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (m *MongoStorage) ClearUserContext(ctx context.Context, userId int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	_, err := m.collection.DeleteOne(ctx, bson.M{"user_id": userId})

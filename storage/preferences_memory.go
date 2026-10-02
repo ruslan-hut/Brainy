@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -19,7 +20,7 @@ func NewMemoryPreferencesStorage() *MemoryPreferencesStorage {
 }
 
 // GetUserPreferences retrieves preferences for a user
-func (m *MemoryPreferencesStorage) GetUserPreferences(userId int64) (*UserPreferences, error) {
+func (m *MemoryPreferencesStorage) GetUserPreferences(ctx context.Context, userId int64) (*UserPreferences, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 	if prefs, ok := m.preferences[userId]; ok {
@@ -37,7 +38,7 @@ func (m *MemoryPreferencesStorage) GetUserPreferences(userId int64) (*UserPrefer
 }
 
 // SaveUserPreferences creates or updates user preferences
-func (m *MemoryPreferencesStorage) SaveUserPreferences(prefs *UserPreferences) error {
+func (m *MemoryPreferencesStorage) SaveUserPreferences(ctx context.Context, prefs *UserPreferences) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -67,7 +68,7 @@ func (m *MemoryPreferencesStorage) SaveUserPreferences(prefs *UserPreferences) e
 }
 
 // UpdateLastMessageTime updates the LastMessageAt timestamp
-func (m *MemoryPreferencesStorage) UpdateLastMessageTime(userId int64) error {
+func (m *MemoryPreferencesStorage) UpdateLastMessageTime(ctx context.Context, userId int64) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -87,7 +88,7 @@ func (m *MemoryPreferencesStorage) UpdateLastMessageTime(userId int64) error {
 }
 
 // GetUsersNeedingAnalysis returns users who need preference analysis
-func (m *MemoryPreferencesStorage) GetUsersNeedingAnalysis(cutoffDuration time.Duration) ([]int64, error) {
+func (m *MemoryPreferencesStorage) GetUsersNeedingAnalysis(ctx context.Context, cutoffDuration time.Duration) ([]int64, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 

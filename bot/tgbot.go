@@ -4,6 +4,9 @@ import (
 	"Brainy/core"
 	"Brainy/lib/sl"
 	"Brainy/storage"
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -13,7 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 const streamEditInterval = 400 * time.Millisecond
@@ -28,7 +32,7 @@ const errorResponse = "Sorry, I'm not feeling well today. Please try again later
 type TgBot struct {
 	conf          *core.Config
 	log           *slog.Logger
-	api           *tgbotapi.BotAPI
+	api           *tg.Bot
 	chat          core.ChatService
 	prefs         storage.PreferencesStorage
 	users         storage.UsersStorage
@@ -37,27 +41,38 @@ type TgBot struct {
 	awaitingTopic sync.Map // userID -> struct{} : /menu topic button pressed, next message is the topic
 	wizard        *wizardManager
 	botUsername   string
-	stopChan      chan struct{}
+	// replies tracks goroutines started by goSafe so Start can wait for them
+	// before the caller closes storage.
+	replies sync.WaitGroup
 	// draftsUnsupported is set once sendMessageDraft fails, so later replies
 	// stream by editing instead of retrying drafts.
 	draftsUnsupported atomic.Bool
 }
 
 func NewTgBot(conf *core.Config, log *slog.Logger) (*TgBot, error) {
-	tgBot := &TgBot{
+	t := &TgBot{
 		conf:        conf,
 		log:         log.With(sl.Module("tgbot")),
 		botUsername: conf.Username,
-		stopChan:    make(chan struct{}),
 	}
 
-	api, err := tgbotapi.NewBotAPI(conf.TelegramApiKey)
+	// Updates are routed one at a time, as before; slow work (LLM calls)
+	// is moved off the update loop with goSafe.
+	api, err := tg.New(conf.TelegramApiKey,
+		tg.WithDefaultHandler(t.handleUpdate),
+		tg.WithNotAsyncHandlers(),
+		tg.WithErrorsHandler(func(err error) {
+			if !errors.Is(err, context.Canceled) {
+				t.log.Error("telegram", sl.Err(err))
+			}
+		}),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("creating api instance: %v", err)
+		return nil, fmt.Errorf("creating api instance: %w", err)
 	}
-	tgBot.api = api
+	t.api = api
 
-	return tgBot, nil
+	return t, nil
 }
 
 // SetChat set chat service
@@ -73,138 +88,146 @@ func (t *TgBot) SetPreferences(prefs storage.PreferencesStorage) {
 
 // SetAccessControl enables role-based gating and the invite-code system.
 // Admin IDs from config are seeded as admins on startup.
-func (t *TgBot) SetAccessControl(users storage.UsersStorage, invites storage.InvitesStorage, adminIds []int64) {
+func (t *TgBot) SetAccessControl(ctx context.Context, users storage.UsersStorage, invites storage.InvitesStorage, adminIds []int64) {
 	t.users = users
 	t.invites = invites
-	t.seedAdmins(adminIds)
+	t.seedAdmins(ctx, adminIds)
+}
+
+// Start polls for updates until ctx is cancelled, then waits for in-flight
+// replies to finish.
+func (t *TgBot) Start(ctx context.Context) {
+	t.api.Start(ctx)
+	t.replies.Wait()
+	t.log.Info("bot stopped")
+}
+
+func isPrivate(chat models.Chat) bool {
+	return chat.Type == models.ChatTypePrivate
+}
+
+// parseCommand returns the command name (without the leading "/" and any
+// "@botname" suffix) and its arguments when msg starts with a bot command.
+func parseCommand(msg *models.Message) (cmd, args string, ok bool) {
+	for _, e := range msg.Entities {
+		if e.Type != models.MessageEntityTypeBotCommand || e.Offset != 0 {
+			continue
+		}
+		// Commands are ASCII, so the UTF-16 entity length equals the byte length.
+		if e.Length < 2 || e.Length > len(msg.Text) {
+			return "", "", false
+		}
+		cmd, _, _ = strings.Cut(msg.Text[1:e.Length], "@")
+		return cmd, strings.TrimSpace(msg.Text[e.Length:]), true
+	}
+	return "", "", false
 }
 
 // requirePrivate refuses management commands in non-private chats and tells
 // the user to DM the bot. Returns true if the chat is private.
-func (t *TgBot) requirePrivate(chat *tgbotapi.Chat) bool {
-	if chat.IsPrivate() {
+func (t *TgBot) requirePrivate(ctx context.Context, chat models.Chat) bool {
+	if isPrivate(chat) {
 		return true
 	}
-	t.plainResponse(chat.ID, "This command is only available in a direct chat with me.")
+	t.plainResponse(ctx, chat.ID, "This command is only available in a direct chat with me.")
 	return false
 }
 
 // adminTarget returns the chat ID to use for an admin command's response.
 // If invoked in a non-private chat, deletes the original message and redirects
 // to the admin's DM (their user ID == private chat ID in Telegram).
-func (t *TgBot) adminTarget(chat *tgbotapi.Chat, msg *tgbotapi.Message) int64 {
-	if chat.IsPrivate() {
-		return chat.ID
+func (t *TgBot) adminTarget(ctx context.Context, msg *models.Message) int64 {
+	if isPrivate(msg.Chat) {
+		return msg.Chat.ID
 	}
-	t.deleteMessage(chat.ID, msg.MessageID)
+	t.deleteMessage(ctx, msg.Chat.ID, msg.ID)
 	return msg.From.ID
 }
 
 // userLanguage returns the user's preferred language, or fallback if not set.
-func (t *TgBot) userLanguage(userId int64, fallback string) string {
+func (t *TgBot) userLanguage(ctx context.Context, userId int64, fallback string) string {
 	if t.prefs == nil {
 		return fallback
 	}
-	p, err := t.prefs.GetUserPreferences(userId)
+	p, err := t.prefs.GetUserPreferences(ctx, userId)
 	if err != nil || p == nil || p.PreferredLanguage == "" {
 		return fallback
 	}
 	return p.PreferredLanguage
 }
 
-func (t *TgBot) Start() error {
-	// Set up an update configuration
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	// Start listening for updates
-	updates := t.api.GetUpdatesChan(u)
-
-	// Define a command handler
-	for {
-		select {
-		case update := <-updates:
-			t.handleUpdate(update)
-		case <-t.stopChan:
-			t.log.Info("stopping bot gracefully")
-			return nil
-		}
-	}
-}
-
 // handleUpdate processes a single update. A panic in any handler is logged
 // and the bot keeps serving other updates.
-func (t *TgBot) handleUpdate(update tgbotapi.Update) {
+func (t *TgBot) handleUpdate(ctx context.Context, _ *tg.Bot, update *models.Update) {
 	defer t.recoverPanic()
 
-	if update.CallbackQuery != nil {
-		data := update.CallbackQuery.Data
+	if cb := update.CallbackQuery; cb != nil {
 		switch {
-		case t.wizard != nil && strings.HasPrefix(data, callbackPrefix+":"):
-			t.wizard.handleCallback(update.CallbackQuery)
-		case strings.HasPrefix(data, adminCallbackPrefix+":"):
-			t.handleAdminCallback(update.CallbackQuery)
-		case strings.HasPrefix(data, menuCallbackPrefix+":"):
-			t.handleMenuCallback(update.CallbackQuery)
+		case t.wizard != nil && strings.HasPrefix(cb.Data, callbackPrefix+":"):
+			t.wizard.handleCallback(ctx, cb)
+		case strings.HasPrefix(cb.Data, adminCallbackPrefix+":"):
+			t.handleAdminCallback(ctx, cb)
+		case strings.HasPrefix(cb.Data, menuCallbackPrefix+":"):
+			t.handleMenuCallback(ctx, cb)
 		}
 		return
 	}
-	if update.Message == nil {
+	incoming := update.Message
+	if incoming == nil || incoming.From == nil {
 		return
 	}
 
-	incoming := update.Message
 	chat := incoming.Chat
 	question := incoming.Text
+	cmd, args, isCommand := parseCommand(incoming)
 
-	if !incoming.IsCommand() && !chat.IsPrivate() && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
+	if !isCommand && !isPrivate(chat) && !t.isMentioned(incoming.Text) && !t.isReplyToBot(incoming) {
 		return
 	}
 
 	// Check for non-text messages (images, voice, stickers, etc.)
 	if question == "" {
 		t.log.With(
-			slog.String("user", chat.UserName),
+			slog.String("user", chat.Username),
 			slog.Int64("id", chat.ID),
 		).Debug("non-text message received")
-		t.sendRandomEmoji(chat.ID)
+		t.sendRandomEmoji(ctx, chat.ID)
 		return
 	}
 
 	// Access control: invites only gate DMs. In groups, presence in
 	// the chat implies access — group membership is the authorization.
-	if t.users != nil && chat.IsPrivate() {
-		if incoming.IsCommand() && incoming.Command() == "start" {
-			arg := strings.TrimSpace(strings.TrimPrefix(question, "/start"))
-			t.handleStart(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, arg)
+	if t.users != nil && isPrivate(chat) {
+		if isCommand && cmd == "start" {
+			t.handleStart(ctx, chat.ID, incoming.From.ID, incoming.ID, chat.Username, args)
 			return
 		}
-		if !t.isAuthorized(incoming.From.ID) {
-			if _, awaiting := t.awaiting.Load(incoming.From.ID); awaiting && !incoming.IsCommand() {
-				t.handleInviteSubmission(chat.ID, incoming.From.ID, incoming.MessageID, chat.UserName, question)
+		if !t.isAuthorized(ctx, incoming.From.ID) {
+			if _, awaiting := t.awaiting.Load(incoming.From.ID); awaiting && !isCommand {
+				t.handleInviteSubmission(ctx, chat.ID, incoming.From.ID, incoming.ID, chat.Username, question)
 				return
 			}
-			t.plainResponse(chat.ID, "Access is by invite only. Send /start to begin.")
+			t.plainResponse(ctx, chat.ID, "Access is by invite only. Send /start to begin.")
 			return
 		}
 	}
 
 	// Capture topic submission triggered from /menu.
-	if !incoming.IsCommand() {
+	if !isCommand {
 		if _, ok := t.awaitingTopic.LoadAndDelete(incoming.From.ID); ok {
 			topic := strings.TrimSpace(question)
 			if topic == "" {
-				t.plainResponse(chat.ID, "Topic was empty, nothing changed.")
+				t.plainResponse(ctx, chat.ID, "Topic was empty, nothing changed.")
 				return
 			}
-			t.chat.SetTopic(chat.ID, topic)
-			t.plainResponse(chat.ID, "Topic set: "+topic)
+			t.chat.SetTopic(ctx, chat.ID, topic)
+			t.plainResponse(ctx, chat.ID, "Topic set: "+topic)
 			return
 		}
 	}
 
-	if incoming.IsCommand() {
-		switch incoming.Command() {
+	if isCommand {
+		switch cmd {
 		case "help":
 			text := "You can use the following commands:\n"
 			text += "/help - show this help\n"
@@ -217,140 +240,139 @@ func (t *TgBot) handleUpdate(update tgbotapi.Update) {
 			text += "/clear - clear bot memory to begin new topic\n"
 			text += "/tuneup - configure tone, length, language, etc.\n"
 			text += "/menu - quick actions (set topic, clear context)\n"
-			if t.isAdmin(incoming.From.ID) {
+			if t.isAdmin(ctx, incoming.From.ID) {
 				text += "\nAdmin commands:\n"
 				text += "/admin - show admin menu\n"
 				text += "/gencode - generate an invite code\n"
 				text += "/codes - list invite codes\n"
 				text += "/showid - show current chat id\n"
 			}
-			t.plainResponse(chat.ID, text)
+			t.plainResponse(ctx, chat.ID, text)
 			return
 		case "admin":
-			if !t.isAdmin(incoming.From.ID) {
+			if !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
-			target := t.adminTarget(chat, incoming)
-			msg := tgbotapi.NewMessage(target, "Admin menu:")
-			msg.ReplyMarkup = adminMenuKeyboard()
-			if _, err := t.api.Send(msg); err != nil {
+			target := t.adminTarget(ctx, incoming)
+			if _, err := t.api.SendMessage(ctx, &tg.SendMessageParams{
+				ChatID:      target,
+				Text:        "Admin menu:",
+				ReplyMarkup: adminMenuKeyboard(),
+			}); err != nil {
 				t.log.With(slog.Int64("id", target)).Warn("admin menu", sl.Err(err))
 			}
 			return
 		case "gencode":
-			if !t.isAdmin(incoming.From.ID) {
+			if !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
-			target := t.adminTarget(chat, incoming)
-			code, err := t.generateAndSaveCode(incoming.From.ID)
+			target := t.adminTarget(ctx, incoming)
+			code, err := t.generateAndSaveCode(ctx, incoming.From.ID)
 			if err != nil {
-				t.plainResponse(target, "Failed to generate code: "+err.Error())
+				t.plainResponse(ctx, target, "Failed to generate code: "+err.Error())
 				return
 			}
-			t.plainResponse(target, "New invite code: "+code)
+			t.plainResponse(ctx, target, "New invite code: "+code)
 			return
 		case "codes":
-			if !t.isAdmin(incoming.From.ID) {
+			if !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
-			target := t.adminTarget(chat, incoming)
-			t.plainResponse(target, t.formatInviteList())
+			target := t.adminTarget(ctx, incoming)
+			t.plainResponse(ctx, target, t.formatInviteList(ctx))
 			return
 		case "showid":
-			if !t.isAdmin(incoming.From.ID) {
+			if !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
-			sourceChatID := chat.ID
-			target := t.adminTarget(chat, incoming)
-			t.plainResponse(target, fmt.Sprintf("Chat ID: %d\nType: %s\nTitle: %s", sourceChatID, chat.Type, chat.Title))
+			target := t.adminTarget(ctx, incoming)
+			t.plainResponse(ctx, target, fmt.Sprintf("Chat ID: %d\nType: %s\nTitle: %s", chat.ID, chat.Type, chat.Title))
 			return
 		case "ask":
-			stripped := strings.TrimSpace(strings.TrimPrefix(question, "/ask"))
-			if stripped == "" {
-				t.plainResponse(chat.ID, "Please provide a question. Example: /ask what is the capital of France?")
+			if args == "" {
+				t.plainResponse(ctx, chat.ID, "Please provide a question. Example: /ask what is the capital of France?")
 				return
 			}
-			lang := t.userLanguage(incoming.From.ID, "")
-			prompt := stripped
-			if lang != "" {
-				prompt = fmt.Sprintf("Answer in %s. %s", lang, stripped)
+			prompt := args
+			if lang := t.userLanguage(ctx, incoming.From.ID, ""); lang != "" {
+				prompt = fmt.Sprintf("Answer in %s. %s", lang, args)
 			}
-			t.goSafe(func() { t.sendOneShot(chat.ID, prompt) })
+			t.goSafe(func() { t.sendOneShot(ctx, chat.ID, prompt) })
 			return
 		case "cat":
-			word := strings.TrimSpace(strings.TrimPrefix(question, "/cat"))
-			if word == "" {
-				t.plainResponse(chat.ID, "Please provide a word. Example: /cat poma")
+			if args == "" {
+				t.plainResponse(ctx, chat.ID, "Please provide a word. Example: /cat poma")
 				return
 			}
-			t.goSafe(func() { t.sendTranslate(chat.ID, "Catalan", word, t.userLanguage(incoming.From.ID, "English")) })
+			lang := t.userLanguage(ctx, incoming.From.ID, "English")
+			t.goSafe(func() { t.sendTranslate(ctx, chat.ID, "Catalan", args, lang) })
 			return
 		case "cas":
-			word := strings.TrimSpace(strings.TrimPrefix(question, "/cas"))
-			if word == "" {
-				t.plainResponse(chat.ID, "Please provide a word. Example: /cas manzana")
+			if args == "" {
+				t.plainResponse(ctx, chat.ID, "Please provide a word. Example: /cas manzana")
 				return
 			}
-			t.goSafe(func() { t.sendTranslate(chat.ID, "Spanish", word, t.userLanguage(incoming.From.ID, "English")) })
+			lang := t.userLanguage(ctx, incoming.From.ID, "English")
+			t.goSafe(func() { t.sendTranslate(ctx, chat.ID, "Spanish", args, lang) })
 			return
 		case "hello":
-			lang := t.userLanguage(incoming.From.ID, "English")
-			t.goSafe(func() { t.sendOneShot(chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang)) })
+			lang := t.userLanguage(ctx, incoming.From.ID, "English")
+			t.goSafe(func() {
+				t.sendOneShot(ctx, chat.ID, fmt.Sprintf("Answer in %s: Say one random fact from science.", lang))
+			})
 			return
 		case "topic":
-			if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+			if !isPrivate(chat) && !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
-			topic := strings.TrimSpace(strings.TrimPrefix(question, "/topic"))
-			if topic != "" {
-				t.chat.SetTopic(chat.ID, topic)
-				t.plainResponse(chat.ID, "Let's talk about "+topic+".")
+			if args != "" {
+				t.chat.SetTopic(ctx, chat.ID, args)
+				t.plainResponse(ctx, chat.ID, "Let's talk about "+args+".")
 				return
 			}
-			current := t.chat.GetTopic(chat.ID)
+			current := t.chat.GetTopic(ctx, chat.ID)
 			if current == "" {
-				t.plainResponse(chat.ID, "No topic set. Provide a subject. Example: /topic astronomy")
+				t.plainResponse(ctx, chat.ID, "No topic set. Provide a subject. Example: /topic astronomy")
 				return
 			}
-			t.sendTopicMenu(chat.ID, current)
+			t.sendTopicMenu(ctx, chat.ID, current)
 			return
 		case "imagine":
-			imagePrompt := strings.TrimSpace(strings.TrimPrefix(question, "/imagine"))
-			if imagePrompt == "" {
-				t.plainResponse(chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
+			if args == "" {
+				t.plainResponse(ctx, chat.ID, "Please provide a description for the image. Example: /imagine a sunset over mountains")
 				return
 			}
-			t.goSafe(func() { t.SendImageResponse(chat.ID, imagePrompt) })
+			t.goSafe(func() { t.SendImageResponse(ctx, chat.ID, args) })
 			return
 		case "menu":
-			if !t.requirePrivate(chat) {
+			if !t.requirePrivate(ctx, chat) {
 				return
 			}
-			t.sendMenu(chat.ID)
+			t.sendMenu(ctx, chat.ID)
 			return
 		case "tuneup":
-			if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+			if !isPrivate(chat) && !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
-			if !t.requirePrivate(chat) {
+			if !t.requirePrivate(ctx, chat) {
 				return
 			}
 			if t.wizard == nil {
-				t.plainResponse(chat.ID, "Tuning is not available right now.")
+				t.plainResponse(ctx, chat.ID, "Tuning is not available right now.")
 				return
 			}
-			t.wizard.start(chat.ID, incoming.From.ID)
+			t.wizard.start(ctx, chat.ID, incoming.From.ID)
 			return
 		case "clear":
-			if !chat.IsPrivate() && !t.isAdmin(incoming.From.ID) {
+			if !isPrivate(chat) && !t.isAdmin(ctx, incoming.From.ID) {
 				return
 			}
 			t.log.With(
-				slog.String("user", chat.UserName),
+				slog.String("user", chat.Username),
 				slog.Int64("id", chat.ID),
 			).Info("context cleared")
-			t.chat.ClearContext(chat.ID)
-			t.plainResponse(chat.ID, "context cleared")
+			t.chat.ClearContext(ctx, chat.ID)
+			t.plainResponse(ctx, chat.ID, "context cleared")
 			return
 		}
 	}
@@ -363,17 +385,19 @@ func (t *TgBot) handleUpdate(update tgbotapi.Update) {
 		logText = logText[:50] + "..."
 	}
 	t.log.With(
-		slog.String("user", chat.UserName),
+		slog.String("user", chat.Username),
 		slog.Int64("id", chat.ID),
 		slog.String("text", logText),
 	).Info("incoming message")
 
-	t.goSafe(func() { t.SendResponse(chat.ID, chat.IsPrivate(), question) })
+	t.goSafe(func() { t.SendResponse(ctx, chat.ID, isPrivate(chat), question) })
 }
 
-// goSafe runs fn in a goroutine, logging instead of crashing on panic.
+// goSafe runs fn in a tracked goroutine, logging instead of crashing on panic.
 func (t *TgBot) goSafe(fn func()) {
+	t.replies.Add(1)
 	go func() {
+		defer t.replies.Done()
 		defer t.recoverPanic()
 		fn()
 	}()
@@ -385,93 +409,89 @@ func (t *TgBot) recoverPanic() {
 	}
 }
 
-func (t *TgBot) Stop() {
-	close(t.stopChan)
-}
-
-func (t *TgBot) sendChatAction(chatId int64, action string) {
-	msg := tgbotapi.NewChatAction(chatId, action)
-	_, err := t.api.Request(msg)
-	if err != nil {
-		t.log.With(
-			slog.String("action", action),
-			slog.Int64("id", chatId),
-		).Error("sending chat action", sl.Err(err))
+func (t *TgBot) sendChatAction(ctx context.Context, chatId int64) {
+	if _, err := t.api.SendChatAction(ctx, &tg.SendChatActionParams{
+		ChatID: chatId,
+		Action: models.ChatActionTyping,
+	}); err != nil {
+		t.log.With(slog.Int64("id", chatId)).Error("sending chat action", sl.Err(err))
 	}
 }
 
-func (t *TgBot) sendRandomEmoji(chatId int64) {
+func (t *TgBot) sendRandomEmoji(ctx context.Context, chatId int64) {
 	emoji := smileEmojis[rand.Intn(len(smileEmojis))]
-	msg := tgbotapi.NewMessage(chatId, emoji)
-	_, err := t.api.Send(msg)
-	if err != nil {
-		t.log.With(
-			slog.Int64("id", chatId),
-		).Error("sending emoji", sl.Err(err))
+	if _, err := t.api.SendMessage(ctx, &tg.SendMessageParams{ChatID: chatId, Text: emoji}); err != nil {
+		t.log.With(slog.Int64("id", chatId)).Error("sending emoji", sl.Err(err))
 	}
 }
 
-func (t *TgBot) SendResponse(chatId int64, private bool, request string) {
-	t.sendChatAction(chatId, "typing")
+func (t *TgBot) SendResponse(ctx context.Context, chatId int64, private bool, request string) {
+	t.sendChatAction(ctx, chatId)
 
 	editor := newStreamEditor(t, chatId, private)
-	editor.start()
+	editor.start(ctx)
 
-	resp, err := t.chat.AskStream(chatId, request, editor.update)
+	resp, err := t.chat.AskStream(ctx, chatId, request, editor.update)
 	editor.stop()
 
 	if err != nil {
+		if ctx.Err() != nil {
+			t.log.With(slog.Int64("id", chatId)).Info("reply cancelled by shutdown")
+			return
+		}
 		t.log.With(slog.Int64("id", chatId)).Error("composing reply", sl.Err(err))
-		editor.deleteIfPosted()
-		t.plainResponse(chatId, errorResponse)
+		editor.deleteIfPosted(ctx)
+		t.plainResponse(ctx, chatId, errorResponse)
 		return
 	}
 	if resp.ImagePrompt != "" {
-		editor.deleteIfPosted()
-		t.withTyping(chatId, func() {
-			t.generateAndSendImage(chatId, resp.ImagePrompt)
+		editor.deleteIfPosted(ctx)
+		t.withTyping(ctx, chatId, func() {
+			t.generateAndSendImage(ctx, chatId, resp.ImagePrompt)
 		})
 		return
 	}
-	editor.finalize(resp.Text)
+	editor.finalize(ctx, resp.Text)
 }
 
-func (t *TgBot) sendOneShot(chatId int64, prompt string) {
-	t.withTyping(chatId, func() {
-		text, err := t.chat.OneShot(prompt)
+func (t *TgBot) sendOneShot(ctx context.Context, chatId int64, prompt string) {
+	t.withTyping(ctx, chatId, func() {
+		text, err := t.chat.OneShot(ctx, prompt)
 		if err != nil {
 			t.log.With(slog.Int64("id", chatId)).Error("one-shot reply", sl.Err(err))
-			t.plainResponse(chatId, errorResponse)
+			t.plainResponse(ctx, chatId, errorResponse)
 			return
 		}
-		t.plainResponse(chatId, text)
+		t.plainResponse(ctx, chatId, text)
 	})
 }
 
-func (t *TgBot) sendTranslate(chatId int64, language, word, responseLanguage string) {
-	t.withTyping(chatId, func() {
-		text, err := t.chat.Translate(language, word, responseLanguage)
+func (t *TgBot) sendTranslate(ctx context.Context, chatId int64, language, word, responseLanguage string) {
+	t.withTyping(ctx, chatId, func() {
+		text, err := t.chat.Translate(ctx, language, word, responseLanguage)
 		if err != nil {
 			t.log.With(slog.Int64("id", chatId)).Error("translate reply", sl.Err(err))
-			t.plainResponse(chatId, errorResponse)
+			t.plainResponse(ctx, chatId, errorResponse)
 			return
 		}
-		t.plainResponse(chatId, text)
+		t.plainResponse(ctx, chatId, text)
 	})
 }
 
 // withTyping shows a typing indicator while fn runs.
-func (t *TgBot) withTyping(chatId int64, fn func()) {
+func (t *TgBot) withTyping(ctx context.Context, chatId int64, fn func()) {
 	stop := make(chan struct{})
-	t.sendChatAction(chatId, "typing")
+	t.sendChatAction(ctx, chatId)
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				t.sendChatAction(chatId, "typing")
+				t.sendChatAction(ctx, chatId)
 			case <-stop:
+				return
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -481,55 +501,51 @@ func (t *TgBot) withTyping(chatId int64, fn func()) {
 }
 
 // SendImageResponse generates and sends an image
-func (t *TgBot) SendImageResponse(chatId int64, prompt string) {
-	t.withTyping(chatId, func() {
-		t.generateAndSendImage(chatId, prompt)
+func (t *TgBot) SendImageResponse(ctx context.Context, chatId int64, prompt string) {
+	t.withTyping(ctx, chatId, func() {
+		t.generateAndSendImage(ctx, chatId, prompt)
 	})
 }
 
-func (t *TgBot) generateAndSendImage(chatId int64, prompt string) {
-	data, err := t.chat.GenerateImage(chatId, prompt)
+func (t *TgBot) generateAndSendImage(ctx context.Context, chatId int64, prompt string) {
+	data, err := t.chat.GenerateImage(ctx, chatId, prompt)
 	if err != nil {
 		t.log.With(slog.Int64("id", chatId)).Error("generating image", sl.Err(err))
-		t.plainResponse(chatId, "Sorry, I couldn't generate the image. Please try again with a different description.")
+		t.plainResponse(ctx, chatId, "Sorry, I couldn't generate the image. Please try again with a different description.")
 		return
 	}
-	msg := tgbotapi.NewPhoto(chatId, tgbotapi.FileBytes{Name: "image.png", Bytes: data})
-	if _, err := t.api.Send(msg); err != nil {
+	if _, err := t.api.SendPhoto(ctx, &tg.SendPhotoParams{
+		ChatID: chatId,
+		Photo:  &models.InputFileUpload{Filename: "image.png", Data: bytes.NewReader(data)},
+	}); err != nil {
 		t.log.With(slog.Int64("id", chatId)).Error("sending image", sl.Err(err))
-		t.plainResponse(chatId, "Sorry, I couldn't send the image.")
+		t.plainResponse(ctx, chatId, "Sorry, I couldn't send the image.")
 	}
 }
 
-func (t *TgBot) plainResponse(chatId int64, text string) {
+func (t *TgBot) plainResponse(ctx context.Context, chatId int64, text string) {
 	for _, chunk := range splitMessage(text, maxMessageLen) {
-		t.sendFormatted(chatId, chunk)
+		t.sendFormatted(ctx, chatId, chunk)
 	}
 }
 
 // sendFormatted sends a single message-sized chunk as MarkdownV2, falling back
 // to plain text if Telegram rejects the markup.
-func (t *TgBot) sendFormatted(chatId int64, text string) {
+func (t *TgBot) sendFormatted(ctx context.Context, chatId int64, text string) {
 	// ChatGPT uses ** for bold text, so we need to replace it
 	text = strings.ReplaceAll(text, "**", "*")
 	text = strings.ReplaceAll(text, "![", "[")
 
-	// Send the response back to the user
-	sanitized := sanitize(text)
-
-	msg := tgbotapi.NewMessage(chatId, sanitized)
-	msg.ParseMode = "MarkdownV2"
-	_, err := t.api.Send(msg)
+	_, err := t.api.SendMessage(ctx, &tg.SendMessageParams{
+		ChatID:    chatId,
+		Text:      sanitize(text),
+		ParseMode: models.ParseModeMarkdown,
+	})
 	if err != nil {
-		t.log.With(
-			slog.Int64("id", chatId),
-		).Warn("sending message", sl.Err(err))
-		safeMsg := tgbotapi.NewMessage(chatId, stripMarkdown(text))
-		_, err = t.api.Send(safeMsg)
+		t.log.With(slog.Int64("id", chatId)).Warn("sending message", sl.Err(err))
+		_, err = t.api.SendMessage(ctx, &tg.SendMessageParams{ChatID: chatId, Text: stripMarkdown(text)})
 		if err != nil {
-			t.log.With(
-				slog.Int64("id", chatId),
-			).Error("sending safe message", sl.Err(err))
+			t.log.With(slog.Int64("id", chatId)).Error("sending safe message", sl.Err(err))
 		}
 	}
 }
@@ -543,11 +559,9 @@ func (t *TgBot) isMentioned(text string) bool {
 }
 
 // detect if message is a reply to a message from the bot
-func (t *TgBot) isReplyToBot(message *tgbotapi.Message) bool {
-	if message.ReplyToMessage != nil {
-		return message.ReplyToMessage.From != nil && message.ReplyToMessage.From.UserName == t.botUsername
-	}
-	return false
+func (t *TgBot) isReplyToBot(message *models.Message) bool {
+	reply := message.ReplyToMessage
+	return reply != nil && reply.From != nil && reply.From.Username == t.botUsername
 }
 
 // stripMarkdown removes inline markdown emphasis markers (* and _) from text.

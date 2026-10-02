@@ -65,23 +65,23 @@ func (c *ChatGPT) Close() error {
 	return c.contextManager.Close()
 }
 
-func (c *ChatGPT) ClearContext(userId int64) {
+func (c *ChatGPT) ClearContext(ctx context.Context, userId int64) {
 	if c.prefsAnalyzer != nil {
-		c.prefsAnalyzer.TriggerAnalysisAsync(userId)
+		c.prefsAnalyzer.TriggerAnalysisAsync(ctx, userId)
 	}
-	c.contextManager.ClearUserContext(userId)
+	c.contextManager.ClearUserContext(ctx, userId)
 }
 
-func (c *ChatGPT) SetTopic(userId int64, topic string) {
-	c.contextManager.SetTopic(userId, topic)
+func (c *ChatGPT) SetTopic(ctx context.Context, userId int64, topic string) {
+	c.contextManager.SetTopic(ctx, userId, topic)
 }
 
-func (c *ChatGPT) GetTopic(userId int64) string {
-	ctx := c.contextManager.GetUserContext(userId)
-	if ctx == nil {
+func (c *ChatGPT) GetTopic(ctx context.Context, userId int64) string {
+	dialog := c.contextManager.GetUserContext(ctx, userId)
+	if dialog == nil {
 		return ""
 	}
-	return ctx.Topic
+	return dialog.Topic
 }
 
 // SetPreferencesAnalyzer sets the preferences analyzer for prompt injection
@@ -91,8 +91,8 @@ func (c *ChatGPT) SetPreferencesAnalyzer(pa *PreferencesAnalyzer) {
 
 // GenerateImage generates an image using the configured gpt-image-* model and
 // returns the raw image bytes (PNG).
-func (c *ChatGPT) GenerateImage(userId int64, prompt string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+func (c *ChatGPT) GenerateImage(ctx context.Context, userId int64, prompt string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	resp, err := c.client.Images.Generate(ctx, openai.ImageGenerateParams{
@@ -126,28 +126,28 @@ func (c *ChatGPT) GenerateImage(userId int64, prompt string) ([]byte, error) {
 // Ask runs a conversational turn with full history and tools.
 // On image-intent tool call, returns Response{ImagePrompt:...} without
 // touching conversation history.
-func (c *ChatGPT) Ask(userId int64, question string) (core.Response, error) {
-	return c.askInternal(userId, question, nil)
+func (c *ChatGPT) Ask(ctx context.Context, userId int64, question string) (core.Response, error) {
+	return c.askInternal(ctx, userId, question, nil)
 }
 
 // AskStream is like Ask but reports incremental cumulative content via onDelta
 // as the model streams its reply. onDelta is not called when the model decides
 // to call a tool instead of producing text.
-func (c *ChatGPT) AskStream(userId int64, question string, onDelta func(content string)) (core.Response, error) {
-	return c.askInternal(userId, question, onDelta)
+func (c *ChatGPT) AskStream(ctx context.Context, userId int64, question string, onDelta func(content string)) (core.Response, error) {
+	return c.askInternal(ctx, userId, question, onDelta)
 }
 
-func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(content string)) (core.Response, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+func (c *ChatGPT) askInternal(ctx context.Context, userId int64, question string, onDelta func(content string)) (core.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	if c.prefsAnalyzer != nil {
-		c.prefsAnalyzer.UpdateLastMessageTime(userId)
+		c.prefsAnalyzer.UpdateLastMessageTime(ctx, userId)
 	}
 
 	params := openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(c.conf.Model),
-		Messages: c.buildMessages(userId, question),
+		Messages: c.buildMessages(ctx, userId, question),
 		Tools:    c.tools,
 		// Chat Completions allows function calling only with reasoning off.
 		ReasoningEffort: shared.ReasoningEffortNone,
@@ -242,7 +242,7 @@ func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(conten
 		}
 	}
 
-	c.contextManager.UpdateUserContext(userId, holder.Message{
+	c.contextManager.UpdateUserContext(ctx, userId, holder.Message{
 		Text:   question,
 		IsUser: true,
 		Tokens: tokens.Count(question),
@@ -251,13 +251,13 @@ func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(conten
 	if completionTokens == 0 {
 		completionTokens = tokens.Count(text)
 	}
-	c.contextManager.UpdateUserContext(userId, holder.Message{
+	c.contextManager.UpdateUserContext(ctx, userId, holder.Message{
 		Text:   text,
 		IsUser: false,
 		Tokens: completionTokens,
 	})
 	if promptTokens > 0 {
-		c.contextManager.SetTokens(userId, int(promptTokens)+completionTokens)
+		c.contextManager.SetTokens(ctx, userId, int(promptTokens)+completionTokens)
 	}
 
 	logText := text
@@ -275,8 +275,8 @@ func (c *ChatGPT) askInternal(userId int64, question string, onDelta func(conten
 }
 
 // OneShot runs a single-message completion with no history, no tools, no preferences.
-func (c *ChatGPT) OneShot(prompt string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func (c *ChatGPT) OneShot(ctx context.Context, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
@@ -296,18 +296,18 @@ func (c *ChatGPT) OneShot(prompt string) (string, error) {
 // Translate returns a dictionary-style translation for a single word.
 // responseLanguage controls the language of the article itself (transcription
 // labels, examples, etc.); pass "" or "English" for the default.
-func (c *ChatGPT) Translate(language, word, responseLanguage string) (string, error) {
-	return c.OneShot(languageTranslatePrompt(language, responseLanguage) + word)
+func (c *ChatGPT) Translate(ctx context.Context, language, word, responseLanguage string) (string, error) {
+	return c.OneShot(ctx, languageTranslatePrompt(language, responseLanguage)+word)
 }
 
-func (c *ChatGPT) buildMessages(userId int64, question string) []openai.ChatCompletionMessageParamUnion {
+func (c *ChatGPT) buildMessages(ctx context.Context, userId int64, question string) []openai.ChatCompletionMessageParamUnion {
 	var msgs []openai.ChatCompletionMessageParamUnion
 
-	if sys := c.systemPrompt(userId); sys != "" {
+	if sys := c.systemPrompt(ctx, userId); sys != "" {
 		msgs = append(msgs, openai.SystemMessage(sys))
 	}
 
-	if dialog := c.contextManager.GetUserContext(userId); dialog != nil {
+	if dialog := c.contextManager.GetUserContext(ctx, userId); dialog != nil {
 		c.log.With(
 			slog.Int64("user", userId),
 			slog.Int("tokens", dialog.Tokens),
@@ -325,16 +325,16 @@ func (c *ChatGPT) buildMessages(userId int64, question string) []openai.ChatComp
 	return msgs
 }
 
-func (c *ChatGPT) systemPrompt(userId int64) string {
+func (c *ChatGPT) systemPrompt(ctx context.Context, userId int64) string {
 	var parts []string
 
 	if c.prefsAnalyzer != nil {
-		if prefs := c.prefsAnalyzer.GetUserPreferences(userId); prefs != nil {
+		if prefs := c.prefsAnalyzer.GetUserPreferences(ctx, userId); prefs != nil {
 			parts = append(parts, c.buildPreferencesPrompt(prefs))
 		}
 	}
 
-	if dialog := c.contextManager.GetUserContext(userId); dialog != nil && dialog.Topic != "" {
+	if dialog := c.contextManager.GetUserContext(ctx, userId); dialog != nil && dialog.Topic != "" {
 		parts = append(parts, "Current subject: "+dialog.Topic)
 	}
 
