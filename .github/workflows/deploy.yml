@@ -41,7 +41,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "brainy.yml"
-          target: "/etc/conf/"
+          target: "/tmp/brainy-deploy/"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -60,7 +60,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           source: "brainy"
-          target: "/usr/local/bin/"
+          target: "/tmp/brainy-deploy/"
 
       - name: Restart Application
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
@@ -70,4 +70,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            systemctl restart brainy.service 
+            set -e
+            sudo install -m 644 /tmp/brainy-deploy/brainy.yml /etc/conf/brainy.yml
+            sudo install -m 755 /tmp/brainy-deploy/brainy /usr/local/bin/brainy
+            rm -rf /tmp/brainy-deploy
+            sudo systemctl restart brainy.service
